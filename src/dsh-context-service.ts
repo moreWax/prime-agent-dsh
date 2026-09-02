@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Session, SessionId } from "@deepseek-ai/dsh-session";
-import { createAssistantMessage, createUserMessage } from "@deepseek-ai/dsh-llm";
+import { createAssistantMessage, createUserMessage, freezeMessage, type Message } from "@deepseek-ai/dsh-llm";
 import { PROTOCOL, type Request, type Success, type Failure, type SimpleMessage } from "./context-protocol.js";
 
 type State = { session: Session; revision: number };
@@ -39,6 +39,7 @@ export class ContextService {
     if (!this.initialized) throw fault("NOT_INITIALIZED", "call initialize first");
     switch (method) {
       case "session/sync": return this.sync(assertSync(params));
+      case "session/sync-canonical": return this.syncCanonical(assertCanonicalSync(params));
       case "project": return this.project(assertProject(params));
       case "status": return { initialized: true, shuttingDown: this.stopping, sessionCount: this.sessions.size, sessions: [...this.sessions].map(([sessionId, s]) => ({ sessionId, revision: s.revision, eventCount: s.session.seq, messageCount: s.session.deriveMessages().length })) };
       case "shutdown": this.stopping = true; queueMicrotask(this.onShutdown); return { accepted: true };
@@ -66,6 +67,27 @@ export class ContextService {
     return { sessionId: p.sessionId, revision, eventCount: session.seq, messageCount: session.deriveMessages().length };
   }
 
+  private syncCanonical(p: { sessionId: string; messages: Message[]; expectedRevision?: number }): unknown {
+    const prior = this.sessions.get(p.sessionId);
+    if (p.expectedRevision !== undefined && p.expectedRevision !== (prior?.revision ?? 0)) throw fault("REVISION_CONFLICT", "expectedRevision does not match", { actualRevision: prior?.revision ?? 0 });
+    const session = Session.create(SessionId(p.sessionId));
+    let step = 0;
+    for (const raw of p.messages) {
+      const message = freezeMessage(raw);
+      if (message.role === "assistant") {
+        session.append("assistant/message", { turn: step, step, message: message as any }, { surfaceOp: "append" });
+      } else if (message.source.kind === "tool") {
+        session.append("tool/result", { turn: step, step, message: message as any }, { surfaceOp: "append" });
+      } else {
+        session.append("user/message", message as any, { surfaceOp: "append" });
+      }
+      step++;
+    }
+    const revision = (prior?.revision ?? 0) + 1;
+    this.sessions.set(p.sessionId, { session, revision });
+    return { sessionId: p.sessionId, revision, eventCount: session.seq, messageCount: session.deriveMessages().length };
+  }
+
   private project(p: ProjectParams): unknown {
     const state = this.sessions.get(p.sessionId); if (!state) throw fault("SESSION_NOT_FOUND", `unknown session: ${p.sessionId}`);
     const all = state.session.deriveMessages(); const from = p.from ?? 0; const limit = p.limit ?? all.length;
@@ -83,4 +105,9 @@ function assertSync(v: unknown): SyncParams {
 }
 function assertProject(v: unknown): ProjectParams {
   if (!v || typeof v !== "object" || typeof (v as any).sessionId !== "string") throw fault("INVALID_PARAMS", "project requires sessionId"); return v as ProjectParams;
+}
+
+function assertCanonicalSync(v: unknown): { sessionId: string; messages: Message[]; expectedRevision?: number } {
+  if (!v || typeof v !== "object" || typeof (v as any).sessionId !== "string" || !Array.isArray((v as any).messages)) throw fault("INVALID_PARAMS", "session/sync-canonical requires sessionId and messages[]");
+  return v as { sessionId: string; messages: Message[]; expectedRevision?: number };
 }

@@ -1,6 +1,7 @@
 import type { Api, Context, Model } from "@earendil-works/pi-ai";
 import { ContextService } from "./dsh-context-service.js";
 import { PROTOCOL } from "./context-protocol.js";
+import { primeToDsh, dshToPrime } from "./context-converter.js";
 
 export interface ShadowProjectionStats { syncs: number; skips: number; errors: number; lastMessageCount?: number; }
 export class DshContextShadow {
@@ -12,21 +13,16 @@ export class DshContextShadow {
   /** Mirror supported context through a real DSH Session, but return Prime's exact object for parity. */
   async prepare(context: Context, model: Model<Api>, sessionKey = "provider-call"): Promise<Context> {
     try {
-      const messages: Array<{ role: "user" | "assistant"; content: string; provider?: string; model?: string }> = [];
-      for (const message of context.messages) {
-        if (message.role !== "user" && message.role !== "assistant") { this.stats.skips++; return context; }
-        if (typeof message.content === "string") messages.push({ role: message.role, content: message.content });
-        else {
-          const blocks = message.content;
-          if (!Array.isArray(blocks) || blocks.some((block) => block.type !== "text")) { this.stats.skips++; return context; }
-          const content = blocks.map((block: any) => block.text).join("");
-          messages.push(message.role === "assistant" ? { role: "assistant", content, provider: message.provider, model: message.model } : { role: "user", content });
-        }
-      }
-      const response: any = this.call("session/sync", { sessionId: sessionKey, messages, expectedRevision: this.revisions.get(sessionKey) ?? 0 });
+      const canonical = context.messages.map((message) => primeToDsh(message as any));
+      const response: any = this.call("session/sync-canonical", { sessionId: sessionKey, messages: canonical,
+        expectedRevision: this.revisions.get(sessionKey) ?? 0 });
       if (!response.ok) { this.stats.errors++; return context; }
+      const projection: any = this.call("project", { sessionId: sessionKey });
+      if (!projection.ok) { this.stats.errors++; return context; }
+      const roundTrip = projection.result.messages.map((message: any) => dshToPrime(message));
+      if (JSON.stringify(roundTrip) !== JSON.stringify(context.messages)) { this.stats.skips++; return context; }
       this.revisions.set(sessionKey, response.result.revision); this.stats.syncs++; this.stats.lastMessageCount = response.result.messageCount;
-    } catch { this.stats.errors++; }
+    } catch { this.stats.skips++; }
     return context;
   }
   private call(method: string, params?: unknown): unknown { return this.service.handle({ version: PROTOCOL, id: ++this.requestId, method, params }); }

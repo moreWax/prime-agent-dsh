@@ -1,6 +1,6 @@
 # prime-agent-dsh
 
-A self-contained [Prime Agent package](https://github.com/PrimeIntellect-ai/prime-agent) that delegates work to the **real [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)** runtime.
+A self-contained [Prime Agent package](https://github.com/PrimeIntellect-ai/prime-agent) that adds a **DeepSeek Harness inference-context shadow** without replacing Prime behavior, plus optional explicit delegation to the real [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) runtime.
 
 This is **not** a DeepSeek model-provider plugin. The Prime extension launches `dsh --profile acp`, drives it with standard ACP, and routes DSH inference through the model currently selected in Prime. The included DSH bundle uses DSH's stock ACP subagent provider to launch `prime-agent --mode acp` in the reverse direction. DeepSeek Harness remains responsible for its own agent loop, append-only session log, context projection, compaction, tools, skills, subagents, Cordis plugins, and optional memory plugins.
 

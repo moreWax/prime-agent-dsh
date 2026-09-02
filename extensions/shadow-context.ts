@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { ShadowContextTelemetry, type ShadowLocation, type ShadowTraceEntry } from "../src/shadow-telemetry.js";
 import { ContextService } from "../src/dsh-context-service.js";
 import { PROTOCOL } from "../src/context-protocol.js";
+import { primeToDsh, dshToPrime } from "../src/context-converter.js";
 
 function location(ctx: ExtensionContext): ShadowLocation {
   return {
@@ -14,24 +15,6 @@ function metric(entry: ShadowTraceEntry | undefined): string {
   return `#${entry.request} ${entry.bytes}B sha256:${entry.digest.slice(0, 12)} lcp=${entry.commonPrefixBytes}B (${(entry.prefixRatio * 100).toFixed(1)}%) ${entry.reason}`;
 }
 
-function textOf(content: unknown): string | undefined {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return undefined;
-  const text = content.filter((block): block is { type: "text"; text: string } =>
-    Boolean(block) && typeof block === "object" && (block as { type?: unknown }).type === "text"
-    && typeof (block as { text?: unknown }).text === "string").map((block) => block.text).join("");
-  return text || undefined;
-}
-function simpleMessages(messages: readonly any[]): Array<{ role: "user" | "assistant"; content: string; provider?: string; model?: string }> | undefined {
-  const result: Array<{ role: "user" | "assistant"; content: string; provider?: string; model?: string }> = [];
-  for (const message of messages) {
-    if (message.role !== "user" && message.role !== "assistant") return undefined;
-    const content = textOf(message.content); if (content === undefined) return undefined;
-    result.push(message.role === "assistant" ? { role: "assistant", content, provider: message.provider, model: message.model } : { role: "user", content });
-  }
-  return result;
-}
-
 /** Register passive telemetry. Handlers intentionally return nothing. */
 export function registerShadowContextTelemetry(pi: ExtensionAPI): ShadowContextTelemetry {
   const telemetry = new ShadowContextTelemetry();
@@ -42,12 +25,14 @@ export function registerShadowContextTelemetry(pi: ExtensionAPI): ShadowContextT
   pi.on("context", (event, ctx) => {
     telemetry.observe("context", event.messages, location(ctx));
     try {
-      const messages = simpleMessages(event.messages);
-      if (!messages) { dshSkips++; return; }
+      const messages = event.messages.map((message) => primeToDsh(message as any));
       const here = location(ctx); const sessionId = here.sessionId;
-      const response = dsh.handle({ version: PROTOCOL, id: ++requestId, method: "session/sync",
+      const response = dsh.handle({ version: PROTOCOL, id: ++requestId, method: "session/sync-canonical",
         params: { sessionId, messages, expectedRevision: revisions.get(sessionId) ?? 0 } }) as any;
       if (!response.ok) { dshErrors++; return; }
+      const projection = dsh.handle({ version: PROTOCOL, id: ++requestId, method: "project", params: { sessionId } }) as any;
+      const roundTrip = projection.ok ? projection.result.messages.map((message: any) => dshToPrime(message)) : undefined;
+      if (!roundTrip || JSON.stringify(roundTrip) !== JSON.stringify(event.messages)) { dshSkips++; return; }
       revisions.set(sessionId, response.result.revision); dshSyncs++;
     } catch { dshErrors++; }
   });
