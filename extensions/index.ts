@@ -6,6 +6,7 @@ import { loadConfig } from "../src/config.js";
 import { notificationSummary } from "../src/notifications.js";
 import { RuntimeManager } from "../src/runtime-manager.js";
 import { PrimeRouteRegistry } from "../src/model-route.js";
+import { registerShadowContextTelemetry } from "./shadow-context.js";
 
 interface DshDetails {
   sessionId: string;
@@ -61,8 +62,8 @@ function sessionFor(ctx: ExtensionContext, explicit?: string): string | undefine
 }
 
 export default function deepSeekHarnessExtension(pi: ExtensionAPI) {
+  registerShadowContextTelemetry(pi);
   let manager = new RuntimeManager();
-
   pi.registerFlag("dsh-bin", { type: "string", description: "Path to a compatible dsh executable" });
   pi.registerFlag("dsh-home", { type: "string", description: "Isolated DSH_HOME used by the bridge" });
 

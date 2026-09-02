@@ -34,8 +34,16 @@ Ask Prime Agent to delegate a task to DeepSeek Harness, or explicitly use the to
 - Command: `/dsh <task>`
 - Status: `/dsh-status`
 - Full route check: `/dsh-doctor`
+- Inference-context shadow health: `/dsh-context-status`
+- Last content-free prefix trace: `/dsh-context-trace`
 
 The tool returns a DSH session ID. On the same Prime branch, later calls automatically continue the latest DSH session; callers may also pass the ID explicitly. Forking before a DSH result mints a separate DSH session.
+
+## Transparent inference-context integration
+
+v0.0.4 begins the corrected transparent integration in **shadow mode**. Ordinary Prime messages, UI, agent loop, tools, IPython, RLM, skills, sessions, and provider calls remain unchanged. The extension observes final provider payloads, fingerprints request envelopes, measures stable-prefix eligibility, and compares it with actual provider-reported `cacheRead`/`cacheWrite`. It does not mutate context yet.
+
+The detailed shadow-first implementation and rollout plan is in [`docs/inference-context-plan.md`](docs/inference-context-plan.md). Context projection and pruning will only enter the provider path after differential tests prove Prime behavioral parity and fail-open recovery.
 
 ## Upgrade from v0.0.1
 
