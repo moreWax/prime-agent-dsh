@@ -2,6 +2,7 @@ import type { Api, Context, Model } from "@earendil-works/pi-ai";
 import { ContextService } from "./dsh-context-service.js";
 import { PROTOCOL } from "./context-protocol.js";
 import { primeToDsh, dshToPrime } from "./context-converter.js";
+import { stableJson } from "./prefix-metrics.js";
 
 export interface ShadowProjectionStats { syncs: number; skips: number; errors: number; lastMessageCount?: number; }
 export class DshContextShadow {
@@ -20,7 +21,7 @@ export class DshContextShadow {
       const projection: any = this.call("project", { sessionId: sessionKey });
       if (!projection.ok) { this.stats.errors++; return context; }
       const roundTrip = projection.result.messages.map((message: any) => dshToPrime(message));
-      if (JSON.stringify(roundTrip) !== JSON.stringify(context.messages)) { this.stats.skips++; return context; }
+      if (stableJson(roundTrip) !== stableJson(context.messages)) { this.stats.skips++; return context; }
       this.revisions.set(sessionKey, response.result.revision); this.stats.syncs++; this.stats.lastMessageCount = response.result.messageCount;
     } catch { this.stats.skips++; }
     return context;

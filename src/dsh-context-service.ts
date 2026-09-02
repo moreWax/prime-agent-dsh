@@ -76,6 +76,9 @@ export class ContextService {
       const message = freezeMessage(raw);
       if (message.role === "assistant") {
         session.append("assistant/message", { turn: step, step, message: message as any }, { surfaceOp: "append" });
+        for (const block of message.content) if (block.type === "tool-call") {
+          session.append("tool/call", { turn: step, step, callId: block.id, name: block.name, arguments: block.arguments });
+        }
       } else if (message.source.kind === "tool") {
         session.append("tool/result", { turn: step, step, message: message as any }, { surfaceOp: "append" });
       } else {

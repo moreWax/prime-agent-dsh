@@ -3,6 +3,7 @@ import { ShadowContextTelemetry, type ShadowLocation, type ShadowTraceEntry } fr
 import { ContextService } from "../src/dsh-context-service.js";
 import { PROTOCOL } from "../src/context-protocol.js";
 import { primeToDsh, dshToPrime } from "../src/context-converter.js";
+import { stableJson } from "../src/prefix-metrics.js";
 
 function location(ctx: ExtensionContext): ShadowLocation {
   return {
@@ -32,7 +33,7 @@ export function registerShadowContextTelemetry(pi: ExtensionAPI): ShadowContextT
       if (!response.ok) { dshErrors++; return; }
       const projection = dsh.handle({ version: PROTOCOL, id: ++requestId, method: "project", params: { sessionId } }) as any;
       const roundTrip = projection.ok ? projection.result.messages.map((message: any) => dshToPrime(message)) : undefined;
-      if (!roundTrip || JSON.stringify(roundTrip) !== JSON.stringify(event.messages)) { dshSkips++; return; }
+      if (!roundTrip || stableJson(roundTrip) !== stableJson(event.messages)) { dshSkips++; return; }
       revisions.set(sessionId, response.result.revision); dshSyncs++;
     } catch { dshErrors++; }
   });
