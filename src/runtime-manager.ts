@@ -42,6 +42,7 @@ export class RuntimeManager {
         dshBin: config.dshBin ?? bundledDshBin(),
         patches: config.patches,
         initializeTimeoutMs: config.initializeTimeoutMs,
+        env: config.childEnv,
       });
       entry = { client, key, queue: Promise.resolve(), startedAt: Date.now(), activeSessions: new Set() };
       this.entries.set(key, entry);
@@ -88,7 +89,7 @@ export class RuntimeManager {
   async doctor(config: BridgeConfig, cwd: string): Promise<{ protocolVersion: number; sessionId: string }> {
     await ensureDshHome(config);
     const client = new DshAcpClient({ cwd, dshHome: config.dshHome, dshBin: config.dshBin ?? bundledDshBin(),
-      patches: config.patches, initializeTimeoutMs: config.initializeTimeoutMs });
+      patches: config.patches, initializeTimeoutMs: config.initializeTimeoutMs, env: config.childEnv });
     try {
       const initialized = await client.start();
       const sessionId = await client.newSession();

@@ -2,7 +2,7 @@
 
 A self-contained [Prime Agent package](https://github.com/PrimeIntellect-ai/prime-agent) that delegates work to the **real [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)** runtime.
 
-This is **not** a DeepSeek model-provider plugin. The Prime extension launches `dsh --profile acp` and drives it with the standard Agent Client Protocol. The included DSH bundle uses DSH's stock ACP subagent provider to launch `prime-agent --mode acp` in the reverse direction. DeepSeek Harness remains responsible for its own agent loop, append-only session log, context projection, compaction, tools, skills, subagents, Cordis plugins, and optional memory plugins.
+This is **not** a DeepSeek model-provider plugin. The Prime extension launches `dsh --profile acp`, drives it with standard ACP, and routes DSH inference through the model currently selected in Prime. The included DSH bundle uses DSH's stock ACP subagent provider to launch `prime-agent --mode acp` in the reverse direction. DeepSeek Harness remains responsible for its own agent loop, append-only session log, context projection, compaction, tools, skills, subagents, Cordis plugins, and optional memory plugins.
 
 > DeepSeek Harness is currently a developer preview and warns that breaking changes are expected. This package pins the DSH runtime and ACP SDK versions exactly.
 
@@ -46,8 +46,6 @@ v0.0.2 replaces the narrow DSH SDK transport with ACP. Old caller-minted `prime-
 | Variable | Default | Purpose |
 |---|---|---|
 | `PRIME_DSH_PROFILE` | `acp` | Compatibility setting; the Prime bridge currently enforces the ACP profile |
-| `PRIME_DSH_PROVIDER` | `deepseek-official` | DSH model-provider route |
-| `PRIME_DSH_MODEL` | `deepseek-v4-flash` | DSH model route |
 | `PRIME_DSH_HOME` | `~/.prime/agent/deepseek-harness` | Isolated DSH home and persistence |
 | `PRIME_DSH_PATCHES` | empty | Comma/semicolon-separated Cordis patch paths |
 | `PRIME_DSH_BIN` | package-pinned DSH CLI | Optional explicit compatible `dsh` executable |
@@ -55,7 +53,9 @@ v0.0.2 replaces the narrow DSH SDK transport with ACP. Old caller-minted `prime-
 
 The equivalent CLI flags `--dsh-bin` and `--dsh-home` override those two paths.
 
-DSH credentials and provider setup are DSH concerns. Configure them in the isolated `DSH_HOME`, or pass only the provider credentials that the selected DSH adapter needs to the Prime process.
+Model selection and authentication remain Prime Agent concerns. On every bridge call, the extension snapshots `ctx.model`, resolves that model through `ctx.modelRegistry.getApiKeyAndHeaders()`, and gives DSH a loopback capability URL representing that exact route. DSH never receives or persists the upstream credential. It owns context construction and sends its provider request through the Prime-owned proxy. Switching `/model` changes the route used by the next DSH call.
+
+The current release supports Prime models whose wire API is `openai-completions`, `openai-responses`, or `anthropic-messages`, matching DSH's public `llm-pi-ai` adapter. Unsupported provider-specific protocols fail explicitly rather than silently changing request semantics.
 
 ## DSH → Prime installation
 
@@ -87,7 +87,7 @@ Memory behavior depends on the selected DSH profile and installed DSH plugins. T
 ## Security and limitations
 
 - DSH is a nested code-executing agent. Its full base-backed ACP profile currently defaults to workspace-write, but Cordis patches and third-party plugins are trusted code and can change the security boundary.
-- Prime's tool approvals do not automatically become per-tool DSH approvals.
+- DSH permission requests are mapped to Prime's UI and fail closed when no UI is available.
 - Patch paths are operator configuration only; the model-facing tool cannot choose arbitrary patches, profiles, binaries, environment variables, or working directories.
 - ACP cancellation is forwarded through `session/cancel`. The subprocess is closed only during bridge shutdown or if the transport fails.
 - One ACP subprocess is reused per workspace/configuration. Calls on it are serialized.

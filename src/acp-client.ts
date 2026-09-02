@@ -59,7 +59,7 @@ export class DshAcpClient {
     if (this.child) throw new Error("ACP client startup is already in progress");
     const args = ["--profile", "acp", ...this.options.patches?.flatMap((p) => ["--patch", p]) ?? []];
     const child = spawn(this.options.dshBin ?? "dsh", args, {
-      cwd: this.options.cwd, env: { ...process.env, ...this.options.env,
+      cwd: this.options.cwd, env: { ...scrubbedParentEnv(), ...this.options.env,
         ...(this.options.dshHome ? { DSH_HOME: this.options.dshHome } : {}) }, stdio: ["pipe", "pipe", "pipe"],
     });
     this.child = child;
@@ -163,4 +163,11 @@ function waitForExit(child: ChildProcessWithoutNullStreams, timeoutMs: number): 
     const onExit = () => { clearTimeout(timer); resolve(true); };
     child.once("exit", onExit);
   });
+}
+
+function scrubbedParentEnv(): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(process.env).filter(([name]) =>
+    !/(?:^|_)(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)(?:_|$)/i.test(name)
+    && !/^DSH_/i.test(name)
+    && !/^PRIME_DSH_/i.test(name)));
 }

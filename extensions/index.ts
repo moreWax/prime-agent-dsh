@@ -1,9 +1,11 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "../src/config.js";
 import { notificationSummary } from "../src/notifications.js";
 import { RuntimeManager } from "../src/runtime-manager.js";
+import { PrimeRouteRegistry } from "../src/model-route.js";
 
 interface DshDetails {
   sessionId: string;
@@ -17,15 +19,26 @@ interface DshDetails {
   error?: string;
 }
 
-const routePatch = fileURLToPath(new URL("../dsh/acp-route.patch.yml", import.meta.url));
+const routes = new PrimeRouteRegistry();
 
-function configFor(pi: ExtensionAPI, cwd: string) {
-  const config = loadConfig(cwd, {
+async function configFor(pi: ExtensionAPI, ctx: ExtensionContext) {
+  const config = loadConfig(ctx.cwd, {
     dshBin: pi.getFlag("dsh-bin") as string | undefined,
     dshHome: pi.getFlag("dsh-home") as string | undefined,
   });
+  const model = ctx.model as Model<Api> | undefined;
+  if (!model) throw new Error("Prime Agent has no active model to route through DeepSeek Harness");
+  const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+  if (!auth.ok) throw new Error(`Could not resolve Prime model authentication: ${auth.error}`);
+  const resolvedHeaders = auth.headers
+    ? Object.fromEntries(Object.entries(auth.headers).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
+    : undefined;
+  const route = await routes.prepare({ model, auth: { apiKey: auth.apiKey, headers: resolvedHeaders }, thinkingLevel: undefined }, config.dshHome);
   config.profile = "acp";
-  config.patches = [routePatch, ...config.patches];
+  config.provider = model.provider;
+  config.model = model.id;
+  config.patches = [route.patch, ...config.patches];
+  config.childEnv = route.env;
   return config;
 }
 
@@ -55,24 +68,26 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI) {
 
   pi.on("session_shutdown", async () => {
     await manager.closeAll();
+    await routes.closeAll();
     manager = new RuntimeManager();
   });
 
   pi.registerTool({
     name: "deepseek_harness",
     label: "DeepSeek Harness",
-    description: "Delegate a task to the real DeepSeek Harness runtime. DSH owns the delegated session, context, tools, compaction, skills, subagents, and installed memory plugins. Reuse sessionId for follow-ups.",
+    description: "Delegate a task to the real DeepSeek Harness runtime. DSH owns the delegated session, context, tools, compaction, skills, subagents, and installed memory plugins; inference uses Prime's currently selected model. Reuse sessionId for follow-ups.",
     promptGuidelines: [
       "Use deepseek_harness only when the user asks to use or delegate to DeepSeek Harness (DSH).",
       "For a follow-up, pass the sessionId returned by the preceding deepseek_harness call.",
       "Do not claim Prime's current transcript was copied into DSH; provide all task-critical context in prompt.",
+      "DeepSeek Harness is the context/agent harness here, not the model provider; inference follows Prime's active model.",
     ],
     parameters: Type.Object({
       prompt: Type.String({ description: "Self-contained task or follow-up for DeepSeek Harness" }),
       sessionId: Type.Optional(Type.String({ description: "Existing DSH session ID for continuation; omit for a branch-scoped default" })),
     }),
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
-      const config = configFor(pi, ctx.cwd);
+      const config = await configFor(pi, ctx);
       const sessionId = sessionFor(ctx, params.sessionId);
       const displaySessionId = sessionId ?? "new-session";
       let lastUpdate = "DeepSeek Harness: starting";
@@ -122,7 +137,7 @@ DSH session: ${result.sessionId}` }],
     description: "Run a task in the real DeepSeek Harness runtime",
     handler: async (args, ctx) => {
       if (!args.trim()) { ctx.ui.notify("Usage: /dsh <task>", "warning"); return; }
-      const config = configFor(pi, ctx.cwd);
+      const config = await configFor(pi, ctx);
       const sessionId = sessionFor(ctx);
       ctx.ui.setStatus("deepseek-harness", "DSH running");
       try {
@@ -140,16 +155,18 @@ DSH session: ${result.sessionId}` }],
   pi.registerCommand("dsh-status", {
     description: "Show bridge runtime status and active configuration",
     handler: async (_args, ctx) => {
-      const config = configFor(pi, ctx.cwd);
+      const config = loadConfig(ctx.cwd, { dshBin: pi.getFlag("dsh-bin") as string | undefined,
+        dshHome: pi.getFlag("dsh-home") as string | undefined });
       const status = manager.status();
-      ctx.ui.notify(`DSH profile=${config.profile}, provider=${config.provider}, model=${config.model}, runtimes=${status.length}, home=${config.dshHome}`, "info");
+      const selected = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "none";
+      ctx.ui.notify(`DSH profile=acp, Prime model=${selected}, runtimes=${status.length}, home=${config.dshHome}`, "info");
     },
   });
 
   pi.registerCommand("dsh-doctor", {
     description: "Verify the DSH ACP initialize/new/close lifecycle without a model call",
     handler: async (_args, ctx) => {
-      const config = configFor(pi, ctx.cwd);
+      const config = await configFor(pi, ctx);
       ctx.ui.notify(`Checking DSH ${config.profile} runtime...`, "info");
       try {
         const result = await manager.doctor(config, ctx.cwd);

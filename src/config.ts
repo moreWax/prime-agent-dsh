@@ -13,6 +13,7 @@ export interface BridgeConfig {
   maxTokens?: number;
   initializeTimeoutMs: number;
   requestTimeoutMs?: number;
+  childEnv?: NodeJS.ProcessEnv;
 }
 
 function positiveInteger(value: string | undefined, name: string): number | undefined {
