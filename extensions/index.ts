@@ -19,10 +19,6 @@ interface DshDetails {
   error?: string;
 }
 
-
-interface DshModeState { enabled: boolean; }
-const MODE_ENTRY = "deepseek-harness-mode";
-const MESSAGE_TYPE = "deepseek-harness";
 const routes = new PrimeRouteRegistry();
 
 async function configFor(pi: ExtensionAPI, ctx: ExtensionContext) {
@@ -57,12 +53,8 @@ function sessionFor(ctx: ExtensionContext, explicit?: string): string | undefine
   const branch = ctx.sessionManager.getBranch();
   for (let index = branch.length - 1; index >= 0; index--) {
     const entry = branch[index];
-    let details: Partial<DshDetails> | undefined;
-    if (entry?.type === "message" && entry.message.role === "toolResult" && entry.message.toolName === "deepseek_harness") {
-      details = entry.message.details as Partial<DshDetails> | undefined;
-    } else if (entry?.type === "custom_message" && entry.customType === MESSAGE_TYPE) {
-      details = entry.details as Partial<DshDetails> | undefined;
-    }
+    if (entry?.type !== "message" || entry.message.role !== "toolResult" || entry.message.toolName !== "deepseek_harness") continue;
+    const details = entry.message.details as Partial<DshDetails> | undefined;
     if (details?.state === "completed" && typeof details.sessionId === "string" && details.sessionId !== "new-session") return details.sessionId;
   }
   return undefined;
@@ -70,16 +62,6 @@ function sessionFor(ctx: ExtensionContext, explicit?: string): string | undefine
 
 export default function deepSeekHarnessExtension(pi: ExtensionAPI) {
   let manager = new RuntimeManager();
-  let dshMode = false;
-
-  const restoreMode = (ctx: ExtensionContext): void => {
-    dshMode = ctx.hasUI;
-    for (const entry of ctx.sessionManager.getBranch()) {
-      if (entry.type === "custom" && entry.customType === MODE_ENTRY) dshMode = Boolean((entry.data as DshModeState | undefined)?.enabled);
-    }
-  };
-  pi.on("session_start", async (_event, ctx) => restoreMode(ctx));
-  pi.on("session_tree", async (_event, ctx) => restoreMode(ctx));
 
   pi.registerFlag("dsh-bin", { type: "string", description: "Path to a compatible dsh executable" });
   pi.registerFlag("dsh-home", { type: "string", description: "Isolated DSH_HOME used by the bridge" });
@@ -88,86 +70,6 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI) {
     await manager.closeAll();
     await routes.closeAll();
     manager = new RuntimeManager();
-  });
-
-  pi.on("context", async (event) => ({
-    // DSH-mode transcript mirrors are presentation/provenance only. If the
-    // user switches back to Prime-native mode, never feed those custom-role
-    // echoes into Prime as a second, incorrectly-role-tagged conversation.
-    messages: event.messages.filter((message) => message.role !== "custom" || message.customType !== MESSAGE_TYPE),
-  }));
-
-  pi.on("input", async (event, ctx) => {
-    if (!dshMode || event.source === "extension") return { action: "continue" };
-    const content = [
-      { type: "text" as const, text: event.text },
-      ...(event.images ?? []),
-    ];
-    pi.sendMessage({ customType: MESSAGE_TYPE, content, display: true,
-      details: { direction: "user", state: "running" } });
-    ctx.ui.setStatus("deepseek-harness", "DSH running");
-    try {
-      const config = await configFor(pi, ctx);
-      const previousSession = sessionFor(ctx);
-      const blocks = [
-        { type: "text" as const, text: event.text },
-        ...(event.images ?? []).map((image) => ({ type: "image" as const, data: image.data, mimeType: image.mimeType })),
-      ];
-      const result = await manager.run(event.text, config, {
-        cwd: ctx.cwd,
-        sessionId: previousSession,
-        promptBlocks: blocks,
-        signal: ctx.signal,
-        onPermission: async (title, choices) => {
-          if (!ctx.hasUI) return undefined;
-          const labels = choices.map((choice) => `${choice.allow ? "Allow" : "Reject"}: ${choice.label}`);
-          const selected = await ctx.ui.select(title, labels);
-          const index = selected === undefined ? -1 : labels.indexOf(selected);
-          return index >= 0 ? choices[index]?.id : undefined;
-        },
-        onUpdate(notification) {
-          const summary = notificationSummary(notification);
-          if (summary) ctx.ui.setStatus("deepseek-harness", summary.replace("DeepSeek Harness: ", "DSH "));
-        },
-      });
-      const completed = result.stopReason === "end_turn";
-      const details: DshDetails = { sessionId: result.sessionId, state: completed ? "completed" : "failed",
-        profile: config.profile, provider: config.provider, model: config.model, updates: result.updates.length,
-        stopReason: result.stopReason, resumed: result.resumed };
-      pi.sendMessage({ customType: MESSAGE_TYPE, content: result.text || `DeepSeek Harness stopped: ${result.stopReason}`,
-        display: true, details });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      pi.sendMessage({ customType: MESSAGE_TYPE, content: `DeepSeek Harness failed: ${message}`, display: true,
-        details: { sessionId: "none", state: "failed", profile: "acp", provider: ctx.model?.provider ?? "none",
-          model: ctx.model?.id ?? "none", error: message } satisfies DshDetails });
-    } finally {
-      ctx.ui.setStatus("deepseek-harness", undefined);
-    }
-    return { action: "handled" };
-  });
-
-  pi.registerCommand("dsh-on", {
-    description: "Route every ordinary message in this Prime session through DeepSeek Harness",
-    handler: async (_args, ctx) => {
-      dshMode = true;
-      pi.appendEntry(MODE_ENTRY, { enabled: true } satisfies DshModeState);
-      ctx.ui.notify("DeepSeek Harness mode enabled: DSH now owns context for ordinary messages", "info");
-    },
-  });
-
-  pi.registerCommand("dsh-off", {
-    description: "Return ordinary messages to Prime Agent's native conversation loop",
-    handler: async (_args, ctx) => {
-      dshMode = false;
-      pi.appendEntry(MODE_ENTRY, { enabled: false } satisfies DshModeState);
-      ctx.ui.notify("DeepSeek Harness mode disabled", "info");
-    },
-  });
-
-  pi.registerCommand("dsh-mode", {
-    description: "Show whether ordinary messages are routed through DeepSeek Harness",
-    handler: async (_args, ctx) => ctx.ui.notify(`DeepSeek Harness mode: ${dshMode ? "on" : "off"}`, "info"),
   });
 
   pi.registerTool({

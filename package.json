@@ -1,6 +1,6 @@
 {
   "name": "prime-agent-dsh",
-  "version": "0.0.3",
+  "version": "0.0.2",
   "description": "Run the real DeepSeek Harness as a delegated runtime from Prime Agent.",
   "keywords": [
     "pi-package",

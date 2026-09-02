@@ -34,20 +34,12 @@ Ask Prime Agent to delegate a task to DeepSeek Harness, or explicitly use the to
 - Command: `/dsh <task>`
 - Status: `/dsh-status`
 - Full route check: `/dsh-doctor`
-- DSH-backed conversation mode: `/dsh-on`, `/dsh-off`, `/dsh-mode`
 
 The tool returns a DSH session ID. On the same Prime branch, later calls automatically continue the latest DSH session; callers may also pass the ID explicitly. Forking before a DSH result mints a separate DSH session.
 
+## Upgrade from v0.0.1
 
-## DSH-backed conversation mode
-
-DSH mode is enabled by default in interactive/RPC UI sessions and disabled in non-UI print mode. Every ordinary message is intercepted before Prime's native agent loop and sent to the branch's DSH session; DSH owns retained context while inference still uses Prime's currently selected model. The extension records visible custom user/assistant messages in Prime for presentation and provenance, but those records are not replayed into DSH model context.
-
-Use `/dsh-off` to return to Prime-native turns and `/dsh-on` to enable it again. Extension commands such as `/dsh-off` bypass input interception, so the escape command remains available even if DSH is unavailable. Skill/template commands are ordinary expanded inputs and are routed to DSH while the mode is enabled.
-
-## Upgrade notes
-
-v0.0.2 replaced the narrow DSH SDK transport with ACP. v0.0.3 adds Prime-selected inference routing and DSH-backed ordinary-message mode. Old caller-minted `prime-…` session identifiers are migrated to a fresh ACP session on first use; their old SDK history is not imported. New ACP-assigned IDs resume normally.
+v0.0.2 replaces the narrow DSH SDK transport with ACP. Old caller-minted `prime-…` session identifiers are migrated to a fresh ACP session on first use; their old SDK history is not imported. New ACP-assigned IDs resume normally.
 
 ## Configuration
 
