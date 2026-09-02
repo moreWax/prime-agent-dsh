@@ -1,0 +1,51 @@
+{
+  "name": "prime-agent-dsh",
+  "version": "0.0.1",
+  "description": "Run the real DeepSeek Harness as a delegated runtime from Prime Agent.",
+  "keywords": [
+    "pi-package",
+    "prime-agent-package",
+    "prime-agent",
+    "dsh-plugin",
+    "deepseek-harness"
+  ],
+  "type": "module",
+  "license": "MIT",
+  "files": [
+    "extensions",
+    "src",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "check": "npm run typecheck && npm test"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-sdk-client": "0.1.2-alpha.4"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.4",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.20.0",
+    "typebox": "1.3.25",
+    "typescript": "^5.9.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
