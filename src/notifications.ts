@@ -1,29 +1,17 @@
-import type { HarnessNotification } from "@deepseek-ai/dsh-sdk-client";
+import type { SessionNotification } from "@agentclientprotocol/sdk";
 
-function record(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null ? value as Record<string, unknown> : undefined;
-}
-
-export function notificationSummary(notification: HarnessNotification): string | undefined {
-  if (notification.method === "session.status") {
-    const status = notification.params.status;
-    return typeof status === "string" ? `DeepSeek Harness: ${status}` : undefined;
-  }
-  if (notification.method === "subagent.started") return "DeepSeek Harness: subagent started";
-  if (notification.method === "subagent.finished") return "DeepSeek Harness: subagent finished";
-  if (notification.method !== "session.event") return undefined;
-  const event = record(notification.params.event);
-  if (!event || typeof event.type !== "string") return undefined;
-  switch (event.type) {
-    case "step/start": return "DeepSeek Harness: model step started";
-    case "tool/call": {
-      const data = record(event.data);
-      const call = record(data?.call);
-      const name = call?.name;
-      return `DeepSeek Harness: tool${typeof name === "string" ? ` ${name}` : ""}`;
-    }
-    case "assistant/message": return "DeepSeek Harness: response committed";
-    case "turn/end": return "DeepSeek Harness: turn ended";
+export function notificationSummary(notification: SessionNotification): string | undefined {
+  const update = notification.update;
+  switch (update.sessionUpdate) {
+    case "agent_message_chunk": return "DeepSeek Harness: writing response";
+    case "agent_thought_chunk": return "DeepSeek Harness: reasoning";
+    case "tool_call": return `DeepSeek Harness: ${update.title || update.name || "tool call"}`;
+    case "tool_call_update": return `DeepSeek Harness: tool ${update.status || "update"}`;
+    case "plan":
+    case "plan_update": return "DeepSeek Harness: plan updated";
+    case "usage_update": return "DeepSeek Harness: usage updated";
+    case "compaction_update": return "DeepSeek Harness: context compacted";
+    case "config_option_update": return "DeepSeek Harness: configuration updated";
     default: return undefined;
   }
 }

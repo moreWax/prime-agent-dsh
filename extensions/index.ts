@@ -1,9 +1,9 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { fileURLToPath } from "node:url";
 import { loadConfig } from "../src/config.js";
 import { notificationSummary } from "../src/notifications.js";
 import { RuntimeManager } from "../src/runtime-manager.js";
-import { dshSessionId } from "../src/session.js";
 
 interface DshDetails {
   sessionId: string;
@@ -11,19 +11,25 @@ interface DshDetails {
   profile: string;
   provider: string;
   model: string;
-  events?: number;
-  notifications?: number;
+  updates?: number;
+  stopReason?: string;
+  resumed?: boolean;
   error?: string;
 }
 
+const routePatch = fileURLToPath(new URL("../dsh/acp-route.patch.yml", import.meta.url));
+
 function configFor(pi: ExtensionAPI, cwd: string) {
-  return loadConfig(cwd, {
+  const config = loadConfig(cwd, {
     dshBin: pi.getFlag("dsh-bin") as string | undefined,
     dshHome: pi.getFlag("dsh-home") as string | undefined,
   });
+  config.profile = "acp";
+  config.patches = [routePatch, ...config.patches];
+  return config;
 }
 
-function sessionFor(ctx: ExtensionContext, explicit?: string): string {
+function sessionFor(ctx: ExtensionContext, explicit?: string): string | undefined {
   if (explicit) {
     if (!/^[A-Za-z0-9._-]{1,128}$/.test(explicit)) throw new Error("sessionId may contain only letters, digits, dot, underscore, and hyphen");
     return explicit;
@@ -36,9 +42,9 @@ function sessionFor(ctx: ExtensionContext, explicit?: string): string {
     const entry = branch[index];
     if (entry?.type !== "message" || entry.message.role !== "toolResult" || entry.message.toolName !== "deepseek_harness") continue;
     const details = entry.message.details as Partial<DshDetails> | undefined;
-    if (typeof details?.sessionId === "string") return details.sessionId;
+    if (details?.state === "completed" && typeof details.sessionId === "string" && details.sessionId !== "new-session") return details.sessionId;
   }
-  return dshSessionId(ctx.sessionManager.getSessionId(), ctx.sessionManager.getLeafId());
+  return undefined;
 }
 
 export default function deepSeekHarnessExtension(pi: ExtensionAPI) {
@@ -68,33 +74,45 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI) {
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const config = configFor(pi, ctx.cwd);
       const sessionId = sessionFor(ctx, params.sessionId);
+      const displaySessionId = sessionId ?? "new-session";
       let lastUpdate = "DeepSeek Harness: starting";
       onUpdate?.({
         content: [{ type: "text", text: lastUpdate }],
-        details: { sessionId, state: "running", profile: config.profile, provider: config.provider, model: config.model } satisfies DshDetails,
+        details: { sessionId: displaySessionId, state: "running", profile: config.profile, provider: config.provider, model: config.model } satisfies DshDetails,
       });
       try {
         const result = await manager.run(params.prompt, config, {
           cwd: ctx.cwd,
           sessionId,
           signal,
-          onNotification(notification) {
+          onPermission: async (title, choices) => {
+            if (!ctx.hasUI) return undefined;
+            const labels = choices.map((choice) => `${choice.allow ? "Allow" : "Reject"}: ${choice.label}`);
+            const selected = await ctx.ui.select(title, labels);
+            const index = selected === undefined ? -1 : labels.indexOf(selected);
+            return index >= 0 ? choices[index]?.id : undefined;
+          },
+          onUpdate(notification) {
             const summary = notificationSummary(notification);
             if (!summary || summary === lastUpdate) return;
             lastUpdate = summary;
             onUpdate?.({
               content: [{ type: "text", text: `${summary}\nSession: ${sessionId}` }],
-              details: { sessionId, state: "running", profile: config.profile, provider: config.provider, model: config.model } satisfies DshDetails,
+              details: { sessionId: displaySessionId, state: "running", profile: config.profile, provider: config.provider, model: config.model } satisfies DshDetails,
             });
           },
         });
-        const details: DshDetails = { sessionId: result.sessionId, state: "completed", profile: config.profile,
-          provider: config.provider, model: config.model, events: result.events.length, notifications: result.notifications.length };
-        return { content: [{ type: "text", text: `${result.finalResponse || "DeepSeek Harness completed without a text response."}\n\nDSH session: ${result.sessionId}` }], details };
+        const completed = result.stopReason === "end_turn";
+        const details: DshDetails = { sessionId: result.sessionId, state: completed ? "completed" : "failed", profile: config.profile,
+          provider: config.provider, model: config.model, updates: result.updates.length, stopReason: result.stopReason, resumed: result.resumed };
+        return { content: [{ type: "text", text: `${result.text || `DeepSeek Harness stopped: ${result.stopReason}`}
+
+DSH session: ${result.sessionId}` }],
+          details, ...(completed ? {} : { isError: true }) };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return { content: [{ type: "text", text: `DeepSeek Harness failed: ${message}\nDSH session: ${sessionId}` }],
-          details: { sessionId, state: "failed", profile: config.profile, provider: config.provider, model: config.model, error: message } satisfies DshDetails,
+          details: { sessionId: displaySessionId, state: "failed", profile: config.profile, provider: config.provider, model: config.model, error: message } satisfies DshDetails,
           isError: true };
       }
     },
@@ -109,7 +127,7 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI) {
       ctx.ui.setStatus("deepseek-harness", "DSH running");
       try {
         const result = await manager.run(args, config, { cwd: ctx.cwd, sessionId });
-        pi.sendMessage({ customType: "deepseek-harness", content: result.finalResponse || "DeepSeek Harness completed without text.", display: true,
+        pi.sendMessage({ customType: "deepseek-harness", content: result.text || "DeepSeek Harness completed without text.", display: true,
           details: { sessionId: result.sessionId, state: "completed", profile: config.profile, provider: config.provider, model: config.model } satisfies DshDetails },
           { deliverAs: "nextTurn" });
         ctx.ui.notify(`DeepSeek Harness completed (${result.sessionId})`, "info");
@@ -129,15 +147,13 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("dsh-doctor", {
-    description: "Start the DSH SDK runtime and verify its initialize handshake",
+    description: "Verify the DSH ACP initialize/new/close lifecycle without a model call",
     handler: async (_args, ctx) => {
       const config = configFor(pi, ctx.cwd);
-      const probeSession = `doctor-${Date.now()}`;
       ctx.ui.notify(`Checking DSH ${config.profile} runtime...`, "info");
       try {
-        // The official high-level API has no handshake-only facade. A minimal run tests the complete route.
-        const result = await manager.run("Reply with exactly: DSH bridge OK", config, { cwd: ctx.cwd, sessionId: probeSession });
-        ctx.ui.notify(`DSH bridge OK: ${result.finalResponse.slice(0, 120)}`, "info");
+        const result = await manager.doctor(config, ctx.cwd);
+        ctx.ui.notify(`DSH ACP bridge OK (protocol ${result.protocolVersion})`, "info");
       } catch (error) {
         ctx.ui.notify(`DSH doctor failed: ${error instanceof Error ? error.message : String(error)}`, "error");
       }

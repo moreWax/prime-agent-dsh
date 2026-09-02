@@ -1,6 +1,6 @@
 {
   "name": "prime-agent-dsh",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Run the real DeepSeek Harness as a delegated runtime from Prime Agent.",
   "keywords": [
     "pi-package",
@@ -15,6 +15,12 @@
     "extensions",
     "src",
     "skills",
+    "dsh/acp-route.patch.yml",
+    "dsh/cordis.patch.yml",
+    "dsh/package.json",
+    "dsh/provider.js",
+    "dsh/tool.js",
+    "dsh/README.md",
     "README.md",
     "LICENSE"
   ],
@@ -32,7 +38,8 @@
     "check": "npm run typecheck && npm test"
   },
   "dependencies": {
-    "@deepseek-ai/dsh-sdk-client": "0.1.2-alpha.4"
+    "@agentclientprotocol/sdk": "1.4.0",
+    "@deepseek-ai/dsh": "0.1.2-alpha.5"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
@@ -46,6 +53,6 @@
     "typescript": "^5.9.0"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.19.0"
   }
 }

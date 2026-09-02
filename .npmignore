@@ -1,0 +1,4 @@
+dsh/node_modules/
+dsh/package-lock.json
+tests/
+tsconfig.json

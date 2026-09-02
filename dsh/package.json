@@ -1,0 +1,33 @@
+{
+  "name": "prime-agent-dsh-profile",
+  "version": "0.0.1",
+  "type": "module",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "files": [
+    "cordis.patch.yml",
+    "README.md",
+    "provider.js",
+    "tool.js"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-subagent-acp": "0.1.2-alpha.5",
+    "@deepseek-ai/dsh-tool-subagent": "0.1.2-alpha.5"
+  },
+  "exports": {
+    ".": "./provider.js",
+    "./provider": "./provider.js",
+    "./tool": "./tool.js",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

@@ -32,7 +32,7 @@ export function loadConfig(cwd: string, flags: { dshBin?: string; dshHome?: stri
   const dshHome = isAbsolute(dshHomeInput) ? dshHomeInput : resolve(cwd, dshHomeInput);
   const dshBinInput = flags.dshBin || process.env.PRIME_DSH_BIN;
   return {
-    profile: process.env.PRIME_DSH_PROFILE || "sdk",
+    profile: process.env.PRIME_DSH_PROFILE || "acp",
     patches: absolutePaths(process.env.PRIME_DSH_PATCHES, cwd),
     dshHome,
     ...(dshBinInput ? { dshBin: isAbsolute(dshBinInput) ? dshBinInput : resolve(cwd, dshBinInput) } : {}),

@@ -1,0 +1,20 @@
+# Adds Prime Agent as an isolated, one-shot DSH subagent through standard ACP.
+# The base-backed target profile already supplies ctx.subagents, ctx.subprocess,
+# ctx.tools, and session projections.
+- insert:
+    - id: subagent-prime-acp
+      name: 'prime-agent-dsh-profile/provider'
+      config:
+        providerName: prime-acp
+        command: prime-agent
+        args: ['--mode', 'acp', '--no-session']
+        permission: reject
+        env: {}
+
+    - id: tool-subagent-prime
+      name: 'prime-agent-dsh-profile/tool'
+      config:
+        provider: prime-acp
+        toolName: prime_subagent
+        backgroundMode: one-shot
+        maxDepth: provider-managed
