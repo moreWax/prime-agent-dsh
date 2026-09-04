@@ -33,7 +33,7 @@ export function loadConfig(): ResolvedConfig {
     fullAccess: envFullAccess ?? fromFile.parsed.fullAccess ?? false,
     mcpServers: mergeMcpServers(fromFile.parsed.mcpServers ?? [], readPrimeMcpServers()),
     persistentTerminal: fromFile.parsed.persistentTerminal ?? false,
-    resumeSeed: envResumeSeed ?? fromFile.parsed.resumeSeed ?? false,
+    resumeSeed: envResumeSeed ?? fromFile.parsed.resumeSeed ?? true,
     model: readDshDefaultModel(),
     loadedFrom: fromFile.exists ? CONFIG_PATH : undefined,
   };
