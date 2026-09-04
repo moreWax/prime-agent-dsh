@@ -250,6 +250,8 @@ export interface AgentPoolOptions {
   /** Stage 3: rebuild the DSH log from Prime's transcript when nothing persisted. */
   resumeSeed?: boolean;
   seed?: () => Promise<TranscriptMessage[]> | TranscriptMessage[];
+  /** Fired after a Stage 3 rebuild so the host can tell the operator. */
+  onRestored?: (info: { dshSessionId: string; seededTurns: number }) => void;
 }
 
 export function agentPoolKey(cwd: string, sessionKey: string, fullAccess: boolean, routeFingerprint: string): string {
@@ -309,7 +311,8 @@ export async function getOrCreateAgent(key: string, opts: AgentPoolOptions): Pro
         const transcript = await opts.seed();
         if (transcript.length > 0) {
           const { seedSession } = await import("./context-seed.js");
-          seedSession(handle.agent.session as never, transcript);
+          const seeded = seedSession(handle.agent.session as never, transcript);
+          if (seeded > 0) opts.onRestored?.({ dshSessionId: sid, seededTurns: seeded });
         }
       } catch {
         // fall back to a blank start

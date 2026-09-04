@@ -52,6 +52,8 @@ export interface InstanceRuntime {
   onTurnComplete?: (info: TurnCompleteInfo) => void;
   /** Stage 3: supply Prime's canonical transcript for resume seeding. */
   resolveSeed?: () => TranscriptMessage[] | Promise<TranscriptMessage[]>;
+  /** Fired after Stage 3 rebuilt a DSH session from Prime's transcript. */
+  onRestored?: (info: { dshSessionId: string; seededTurns: number }) => void;
 }
 
 export function createInstanceRuntime(): InstanceRuntime {
@@ -164,6 +166,7 @@ function streamDshPool(
         persistentTerminal: cfg.persistentTerminal,
         resumeSeed: cfg.resumeSeed,
         seed: runtime.resolveSeed,
+        onRestored: runtime.onRestored,
       });
       entryRef = entry;
       const translator = new TurnTranslator(output, stream);

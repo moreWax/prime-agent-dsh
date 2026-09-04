@@ -99,12 +99,13 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
   // Keep every native provider id, model entry, and auth flow unchanged. The
   // replacement Provider only intercepts streaming and delegates the complete
   // loop/context/tool lifecycle to the persistent in-process DSH tree.
-  new TransparentProviderController(pi, providerConfig, {
+  const transparentController = new TransparentProviderController(pi, providerConfig, {
     dshHome: (ctx) => loadConfig(ctx.cwd, {
       dshBin: pi.getFlag("dsh-bin") as string | undefined,
       dshHome: pi.getFlag("dsh-home") as string | undefined,
     }).dshHome,
-  }).register();
+  });
+  transparentController.register();
   pi.on("model_select", (event) => {
     selectNative(event.model as Model<Api>);
   });
@@ -287,7 +288,12 @@ DSH session: ${result.sessionId}` }],
         dshHome: pi.getFlag("dsh-home") as string | undefined });
       const status = manager.status();
       const selected = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "none";
-      ctx.ui.notify(`DSH profile=acp, Prime model=${selected}, runtimes=${status.length}, home=${config.dshHome}`, "info");
+      const transparent = (typeof transparentController?.isEnabled === "boolean" && transparentController.isEnabled)
+        ? "on" : "off";
+      ctx.ui.notify(
+        `DSH: transparent=${transparent}, Prime model=${selected}, runtimes=${status.length}, home=${config.dshHome}`,
+        "info",
+      );
     },
   });
 

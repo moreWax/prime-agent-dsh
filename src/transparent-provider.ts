@@ -99,6 +99,13 @@ export class TransparentProviderController {
     };
     // Stage 3: seed DSH from Prime's canonical transcript when the persisted
     // DSH session is gone. Best-effort; called only at agent creation.
+    this.runtime.onRestored = (info) => {
+      try {
+        ctx.ui?.notify?.(`DSH conversation rebuilt from Prime transcript (${info.seededTurns} turns).`, "info");
+      } catch {
+        // notices never break the provider path
+      }
+    };
     this.runtime.resolveSeed = () => {
       try {
         return resolvePrimeTranscript(ctx);
