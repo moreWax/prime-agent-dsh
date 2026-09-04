@@ -21,7 +21,7 @@ try {
   let registration;
   registerProvider({ registerProvider(name, config) { registration = { name, config }; } }, {
     dshBin: "unused", timeoutMs: 30_000, mode: "pool", poolMax: 1,
-    poolIdleTtlMs: 60_000, fullAccess: false, transparent: true,
+    poolIdleTtlMs: 60_000, fullAccess: false, transparent: true, mcpServers: [], persistentTerminal: false,
   }, runtime);
   if (!registration) throw new Error("provider registration missing");
   const model = { ...registration.config.models[0], provider: "dsh", api: "dsh-exec" };
@@ -31,7 +31,7 @@ try {
   for await (const _event of stream) { /* drain */ }
   const result = await stream.result();
   const text = (result?.content ?? []).filter((block) => block.type === "text").map((block) => block.text).join("");
-  process.stdout.write(JSON.stringify({ text, stopReason: result?.stopReason, usage: result?.usage, routeFingerprint: route.fingerprint }) + "\n");
+  process.stdout.write(JSON.stringify({ text, stopReason: result?.stopReason, errorMessage: result?.errorMessage, usage: result?.usage, routeFingerprint: route.fingerprint }) + "\n");
 } finally {
   await route.proxy.close();
 }

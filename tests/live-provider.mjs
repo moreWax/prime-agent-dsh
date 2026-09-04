@@ -124,9 +124,9 @@ try {
   const coldSeed = await coldTurn(coldSession, "mock-cold-a", "Remember COLD_ZEBRA. Reply ok.");
   const coldRecall = await coldTurn(coldSession, "mock-cold-a", "RECALL_TOKEN");
   check("persisted DSH projection resumes after a real process cold restart", () => {
-    assert.equal(coldSeed.stopReason, "stop");
+    assert.equal(coldSeed.stopReason, "stop", coldSeed.errorMessage);
     assert.equal(coldRecall.text, "COLD_ZEBRA");
-    assert.equal(coldRecall.stopReason, "stop");
+    assert.equal(coldRecall.stopReason, "stop", coldRecall.errorMessage);
   });
   const switchedRoute = await coldTurn(coldSession, "mock-cold-b", "RECALL_TOKEN");
   check("changing the native model route isolates the persisted session", () => {
