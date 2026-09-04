@@ -39,7 +39,11 @@ const server = http.createServer(async (req, res) => {
     ];
   } else {
     let text = "ok";
-    if (String(latest).includes("RECALL_TOKEN")) text = flattened.includes("ZEBRA_XYZZY") ? "ZEBRA_XYZZY" : "missing";
+    if (Array.isArray(latest)
+      && latest[0]?.type === "text" && latest[0].text === "IMAGE_TEST before"
+      && latest.at(-2)?.type === "image_url" && latest.at(-2).image_url?.url?.startsWith("data:image/webp;base64,")
+      && latest.at(-1)?.type === "text" && latest.at(-1).text === " after") text = "image-order-ok";
+    else if (String(latest).includes("RECALL_TOKEN")) text = flattened.includes("ZEBRA_XYZZY") ? "ZEBRA_XYZZY" : "missing";
     else if (String(latest).includes("ESCAPE_TOOL")) text = "escape-checked";
     else if (flattened.includes("native-dsh-tool-result")) text = "native-dsh-tool-ok";
     else if (String(latest).includes("ABORT_SLOW")) text = "too-late";

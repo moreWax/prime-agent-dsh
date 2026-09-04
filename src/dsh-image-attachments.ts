@@ -3,10 +3,12 @@ import { Context } from "@deepseek-ai/cordis";
 import {
   AttachmentError,
   admitEncodedImages,
+  type AttachmentStore,
   type EncodedImageAttachment,
   type ImageAttachmentRef,
   type ImageMediaType,
 } from "@deepseek-ai/dsh-attachment";
+import type { ContentBlock } from "@deepseek-ai/dsh-llm";
 import { LocalAttachmentStore, type Config as LocalAttachmentConfig } from "@deepseek-ai/dsh-attachment-local";
 
 /** Inline image block used by Prime's model context. */
@@ -15,6 +17,9 @@ export interface PrimeInlineImage {
   readonly mimeType: string;
   readonly name?: string;
 }
+
+/** Ordered image block in a Prime user turn. */
+export type PrimeTurnImage = PrimeInlineImage & { readonly type: "image" };
 
 /** Resolved inline bytes suitable for a Prime image content block. */
 export interface ResolvedPrimeImage {
@@ -34,6 +39,32 @@ function imageMediaType(value: string): ImageMediaType {
   const supported = IMAGE_MEDIA_TYPES.find((candidate) => candidate === value);
   if (!supported) throw new AttachmentError(`Image type ${value} is not accepted by DSH.`, "UNSUPPORTED_IMAGE_TYPE");
   return supported;
+}
+
+
+/** Ordered Prime user-turn content accepted by the pooled provider. */
+export type PrimeTurnContent =
+  | { readonly type: "text"; readonly text: string }
+  | PrimeTurnImage;
+
+/**
+ * Admit every inline image through DSH's authoritative batch gate, then build
+ * immutable-reference content blocks without changing the caller's ordering.
+ */
+export async function admitPrimeTurnContent(
+  attachments: AttachmentStore,
+  content: readonly PrimeTurnContent[],
+): Promise<ContentBlock[]> {
+  const images = content.filter((block): block is PrimeTurnImage => block.type === "image");
+  const admitted = await admitEncodedImages(attachments, images.map((image) => ({
+    data: image.data,
+    mediaType: imageMediaType(image.mimeType),
+    ...(image.name === undefined ? {} : { name: image.name }),
+  })));
+  let imageIndex = 0;
+  return content.map((block): ContentBlock => block.type === "text"
+    ? { type: "text", text: block.text }
+    : { type: "image", attachment: admitted[imageIndex++] });
 }
 
 /**

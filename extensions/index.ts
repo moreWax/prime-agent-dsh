@@ -177,15 +177,23 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "deepseek_harness",
     label: "DeepSeek Harness",
-    description: "Delegate a task to the real DeepSeek Harness runtime. DSH owns the delegated session, context, tools, compaction, skills, subagents, and installed memory plugins; inference uses Prime's currently selected model. Reuse sessionId for follow-ups.",
+    description: "Delegate a task to the real DeepSeek Harness runtime. DSH owns the delegated session, context, tools, compaction, skills, subagents, and installed memory plugins; inference uses Prime's currently selected model. Reuse sessionId for follow-ups. Optional images are sent as ACP image blocks.",
     promptGuidelines: [
       "Use deepseek_harness only when the user asks to use or delegate to DeepSeek Harness (DSH).",
       "For a follow-up, pass the sessionId returned by the preceding deepseek_harness call.",
+      "When delegation needs vision, pass canonical base64 images in the images array.",
       "Do not claim Prime's current transcript was copied into DSH; provide all task-critical context in prompt.",
       "DeepSeek Harness is the context/agent harness here, not the model provider; inference follows Prime's active model.",
     ],
     parameters: Type.Object({
       prompt: Type.String({ description: "Self-contained task or follow-up for DeepSeek Harness" }),
+      images: Type.Optional(Type.Array(Type.Object({
+        data: Type.String({ description: "Canonical base64-encoded image bytes" }),
+        mimeType: Type.Union([
+          Type.Literal("image/png"), Type.Literal("image/jpeg"),
+          Type.Literal("image/webp"), Type.Literal("image/gif"),
+        ]),
+      }), { maxItems: 20, description: "Images to append after the prompt, admitted by DSH's ACP attachment gateway" })),
       sessionId: Type.Optional(Type.String({ description: "Existing DSH session ID for continuation; omit for a branch-scoped default" })),
     }),
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
@@ -198,8 +206,14 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
         details: { sessionId: displaySessionId, state: "running", profile: config.profile, provider: config.provider, model: config.model } satisfies DshDetails,
       });
       try {
+        const promptBlocks = params.images?.length
+          ? [{ type: "text" as const, text: params.prompt }, ...params.images.map((image) => ({
+              type: "image" as const, data: image.data, mimeType: image.mimeType,
+            }))]
+          : undefined;
         const result = await manager.run(params.prompt, config, {
           cwd: ctx.cwd,
+          promptBlocks,
           sessionId,
           signal,
           onPermission: async (title, choices) => {

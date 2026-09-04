@@ -51,7 +51,7 @@ try {
 
   const nativeModel = {
     id: "mock-1", name: "Deterministic Mock", provider: "mock-local",
-    api: "openai-completions", baseUrl, reasoning: false, input: ["text"],
+    api: "openai-completions", baseUrl, reasoning: false, input: ["text", "image"],
     contextWindow: 65536, maxTokens: 4096,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   };
@@ -75,9 +75,9 @@ try {
   });
 
   const model = { ...registration.config.models[0], provider: "dsh", api: "dsh-exec" };
-  async function turn(text, signal) {
+  async function turn(content, signal) {
     const stream = registration.config.streamSimple(model, {
-      messages: [{ role: "user", content: text, timestamp: Date.now() }], tools: [],
+      messages: [{ role: "user", content, timestamp: Date.now() }], tools: [],
     }, { sessionId: runtime.sessionKey, signal });
     const events = [];
     for await (const event of stream) events.push(event.type);
@@ -92,6 +92,12 @@ try {
   });
   const recall = await turn("RECALL_TOKEN");
   check("pool preserves same-session continuity", () => assert.equal(recall.text, "ZEBRA_XYZZY"));
+  const image = await turn([
+    { type: "text", text: "IMAGE_TEST before" },
+    { type: "image", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", mimeType: "image/png" },
+    { type: "text", text: " after" },
+  ]);
+  check("pooled turn admits and routes a live deterministic image", () => assert.equal(image.text, "image-order-ok"));
 
   const beforeTool = await stats();
   const tool = await turn("NATIVE_TOOL");

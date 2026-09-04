@@ -12,6 +12,7 @@ import {
 import { buildModels, PROVIDER_API, PROVIDER_BASE_URL, PROVIDER_ID } from "./dsh-provider-catalog.js";
 import { classifyTurnEnd, textBlockKey, thinkingBlockKey, type TurnOutcome } from "./dsh-provider-turn-reasons.js";
 import type { ResolvedConfig } from "./dsh-provider-types.js";
+import type { PrimeTurnContent } from "./dsh-image-attachments.js";
 import type { PreparedPrimeRoute } from "./model-route.js";
 import {
   destroyAgent,
@@ -127,9 +128,9 @@ function streamDshPool(
 
     try {
       const turn = extractLatestTurn(context);
-      if (turn.text.length > MAX_PROMPT_CHARS) {
+      if (turnTextLength(turn.content) > MAX_PROMPT_CHARS) {
         throw new Error(
-          `Prompt too long (${turn.text.length}  characters; limit  ${MAX_PROMPT_CHARS}); split it and retry.`,
+          `Prompt too long (${turnTextLength(turn.content)} characters; limit  ${MAX_PROMPT_CHARS}); split it and retry.`,
         );
       }
 
@@ -148,7 +149,7 @@ function streamDshPool(
       const translator = new TurnTranslator(output, stream);
 
       stream.push({ type: "start", partial: output });
-      await runTurn(entry, turn.text, options?.signal, (event) => translator.onEvent(event));
+      await runTurn(entry, turn.content, options?.signal, (event) => translator.onEvent(event));
 
       if (aborted || options?.signal?.aborted || translator.turnReason === "aborted") {
         // Abort preserves the pooled session (droid rule) — do NOT destroy.
@@ -544,7 +545,10 @@ function streamDshOneShot(
       // DSH owns context: do NOT re-forward pi's AGENTS.md/skills (double-load).
       const turn = extractLatestTurn(context);
 
-      const result = await runDshOneShot(turn.text, runtime.cwd, cfg, options?.signal);
+      if (turn.content.some((block) => block.type === "image")) {
+        throw new Error("Image input requires pooled DSH mode; set mode to pool and retry.");
+      }
+      const result = await runDshOneShot(turn.content.map((block) => block.type === "text" ? block.text : "").join(""), runtime.cwd, cfg, options?.signal);
 
       if (aborted || options?.signal?.aborted) {
         output.stopReason = "aborted";
@@ -694,21 +698,21 @@ function createEmptyOutput(model: Model<Api>): AssistantMessage {
   };
 }
 
-function extractLatestTurn(context: Context): { text: string } {
+export function extractLatestTurn(context: Context): { content: PrimeTurnContent[] } {
   for (let index = context.messages.length - 1; index >= 0; index--) {
     const message = context.messages[index];
     if (!message || message.role !== "user") continue;
-    if (typeof message.content === "string") return { text: message.content };
-    const items = message.content;
-    const text = items
-      .filter((item) => item.type === "text")
-      .map((item) => item.text)
-      .join("\n");
-    const hasImage = items.some((item) => item.type === "image");
-    if (text || !hasImage) return { text };
-    // The image itself cannot be forwarded to dsh (no image input); tell dsh an
-    // attachment arrived instead of sending nothing.
-    return { text: "请查看图片附件。" };
+    if (typeof message.content === "string") return { content: [{ type: "text", text: message.content }] };
+    const content: PrimeTurnContent[] = [];
+    for (const item of message.content) {
+      if (item.type === "text") content.push({ type: "text", text: item.text });
+      else if (item.type === "image") content.push({ type: "image", data: item.data, mimeType: item.mimeType });
+    }
+    return { content };
   }
-  return { text: "" };
+  return { content: [] };
+}
+
+function turnTextLength(content: readonly PrimeTurnContent[]): number {
+  return content.reduce((total, block) => total + (block.type === "text" ? block.text.length : 0), 0);
 }

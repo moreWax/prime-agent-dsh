@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { AttachmentError } from "@deepseek-ai/dsh-attachment";
 import { dshToPrimeAsync, primeToDshAsync } from "../src/context-converter.js";
-import { LocalDshImageAttachments } from "../src/dsh-image-attachments.js";
+import { admitPrimeTurnContent, LocalDshImageAttachments } from "../src/dsh-image-attachments.js";
 
 // A valid 1x1 opaque PNG. DSH fully decodes it during admission.
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
@@ -58,4 +58,20 @@ test("resolution detects corruption through DSH reference verification", async (
   await writeFile(path, Buffer.from("corrupt"));
   await assert.rejects(attachments.resolveDshImage(image),
     (error: unknown) => error instanceof AttachmentError && error.code === "ATTACHMENT_CORRUPT");
+});
+
+
+test("turn admission preserves text/image ordering and uses DSH references", async () => {
+  const attachments = await gateway();
+  const blocks = await admitPrimeTurnContent(attachments.store, [
+    { type: "text", text: "before" },
+    { type: "image", data: PNG, mimeType: "image/png", name: "pixel.png" },
+    { type: "text", text: "after" },
+  ]);
+  assert.equal(blocks[0]?.type, "text");
+  assert.equal(blocks[1]?.type, "image");
+  assert.equal(blocks[2]?.type, "text");
+  if (blocks[1]?.type !== "image") assert.fail("expected image block");
+  assert.equal(blocks[1].attachment.name, "pixel.png");
+  assert.doesNotMatch(blocks[1].attachment.attachmentId, /prime-dsh-image/);
 });

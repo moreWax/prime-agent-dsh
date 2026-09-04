@@ -10,7 +10,7 @@ import { createRequire } from "node:module";
 import { boot, loadOverlayPatches } from "@deepseek-ai/dsh-app-boot";
 import { installModelSelection } from "@deepseek-ai/dsh-agent";
 import type { Agent, AgentHandle } from "@deepseek-ai/dsh-agent";
-import { createUserMessage, ReasoningEffortId } from "@deepseek-ai/dsh-llm";
+import { createUserMessage, ReasoningEffortId, type ContentBlock } from "@deepseek-ai/dsh-llm";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import type { Context } from "@deepseek-ai/cordis";
 import type {} from "@deepseek-ai/dsh-agent-default-model";
@@ -21,6 +21,7 @@ import { apply as mountAskUserTool } from "@deepseek-ai/dsh-tool-ask-user";
 import { createPrivateRootConfig } from "./dsh-provider-security.js";
 import { BusyLruPool, type PoolEntry } from "./dsh-agent-pool.js";
 import type { PreparedPrimeRoute } from "./model-route.js";
+import { admitPrimeTurnContent, type PrimeTurnContent } from "./dsh-image-attachments.js";
 
 const require = createRequire(import.meta.url);
 
@@ -247,7 +248,7 @@ export async function destroyAgent(entry: AgentEntry): Promise<void> {
 }
 
 /**
- * Drive one turn: subscribe the session/event firehose, follow up with `text`,
+ * Drive one turn: admit ordered multimodal content, subscribe the event firehose,
  * wait for quiescence, and flush the session to persistence (so a later
  * cross-process resume sees the whole log). `onEvent` fires synchronously per
  * session event. On `signal` abort the active turn is cancelled WITHOUT
@@ -256,7 +257,7 @@ export async function destroyAgent(entry: AgentEntry): Promise<void> {
  */
 export async function runTurn(
   entry: AgentEntry,
-  text: string,
+  content: readonly PrimeTurnContent[],
   signal: AbortSignal | undefined,
   onEvent: (event: SessionEventShape) => void,
 ): Promise<void> {
@@ -284,9 +285,13 @@ export async function runTurn(
         if (signal.aborted) abortHandler();
         else signal.addEventListener("abort", abortHandler, { once: true });
       }
+      const tree = await getTree(entry.cwd, entry.fullAccess, entry.route);
+      const attachments = tree.get("attachments");
+      if (!attachments) throw new Error("[pi-dsh] booted tree is missing attachment admission");
+      const blocks: ContentBlock[] = await admitPrimeTurnContent(attachments, content);
       agent.followup(
         createUserMessage({
-          content: [{ type: "text", text }],
+          content: blocks,
           source: { kind: "user" },
         }),
       );
