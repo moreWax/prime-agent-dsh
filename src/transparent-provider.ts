@@ -22,10 +22,9 @@ function registrationName(api: Api): string {
   return `${REGISTRATION_PREFIX}${encodeURIComponent(api)}`;
 }
 
-type TransparentProviderHost = Pick<ExtensionAPI, "on" | "registerCommand" | "registerProvider" | "unregisterProvider">;
+type TransparentProviderHost = Pick<ExtensionAPI, "on" | "registerProvider" | "unregisterProvider">;
 
 export interface TransparentProviderControllerOptions {
-  initialEnabled?: boolean;
   dshHome: (ctx: ExtensionContext) => string;
   /** Test seam; production reads Prime's installed pi-ai API registry. */
   getNativeStream?: (api: Api) => StreamSimple | undefined;
@@ -37,40 +36,23 @@ export interface TransparentProviderControllerOptions {
  * leave native provider/model ids, catalogs, request config and OAuth untouched.
  */
 export class TransparentProviderController {
-  private enabled: boolean;
   private readonly runtime: InstanceRuntime = createInstanceRuntime();
   private readonly routes = new PrimeRouteRegistry();
   private readonly nativeStreams = new Map<Api, StreamSimple>();
   private readonly knownApis = new Set<Api>();
   private ctx?: ExtensionContext;
 
-  constructor(private readonly pi: TransparentProviderHost, private readonly cfg: ResolvedConfig, private readonly options: TransparentProviderControllerOptions) {
-    this.enabled = options.initialEnabled ?? cfg.transparent;
-  }
+  constructor(private readonly pi: TransparentProviderHost, private readonly cfg: ResolvedConfig, private readonly options: TransparentProviderControllerOptions) {}
 
+  /** Transparent DSH wrapping is unconditional: it is the package's only mode. */
   register(): void {
     this.pi.on("session_start", async (_event, ctx) => {
       await Promise.resolve();
       this.bind(ctx);
       this.captureAndPublish(ctx);
     });
-    this.pi.registerCommand("dsh-transparent", {
-      description: "Enable or disable transparent DSH provider wrapping (on|off|status)",
-      handler: async (args, ctx) => {
-        await Promise.resolve();
-        const value = args.trim().toLowerCase();
-        if (value === "on") this.enabled = true;
-        else if (value === "off") this.enabled = false;
-        else if (value && value !== "status") { ctx.ui.notify("Usage: /dsh-transparent on|off|status", "warning"); return; }
-        this.bind(ctx);
-        this.captureAndPublish(ctx);
-        ctx.ui.notify(`Transparent DSH wrapping is ${this.enabled ? "on" : "off"}.`, "info");
-      },
-    });
     this.pi.on("session_shutdown", async () => { await this.routes.closeAll(); });
   }
-
-  get isEnabled(): boolean { return this.enabled; }
 
   private bind(ctx: ExtensionContext): void {
     this.ctx = ctx;
@@ -90,11 +72,8 @@ export class TransparentProviderController {
 
     // A prior extension instance can still own these API slots after /reload.
     // Unregistering first makes Prime rebuild the native registry and reapply
-    // other dynamic providers. When wrapping is disabled (the modular default)
-    // the controller stops here: nothing is captured, wrapped, or thrown at —
-    // inert for every other provider, tool, and package.
+    // other dynamic providers.
     for (const api of this.knownApis) this.pi.unregisterProvider(registrationName(api));
-    if (!this.enabled) return;
     this.nativeStreams.clear();
     for (const api of this.knownApis) {
       const native = this.options.getNativeStream?.(api)
@@ -115,7 +94,7 @@ export class TransparentProviderController {
   private dispatch(model: Model<Api>, context: Parameters<StreamSimple>[1], options?: SimpleStreamOptions) {
     const native = this.nativeStreams.get(model.api);
     if (!native) throw new Error(`Native streamSimple is unavailable for API ${model.api}`);
-    if (!this.enabled || INTERNAL_PROVIDERS.has(model.provider)) return native(model, context, options);
+    if (INTERNAL_PROVIDERS.has(model.provider)) return native(model, context, options);
     const ctx = this.ctx;
     if (!ctx) return native(model, context, options);
     this.runtime.resolveRoute = async () => {

@@ -5,7 +5,7 @@ import type { ExtensionAPI, ExtensionContext, ProviderConfig } from "@earendil-w
 import { TransparentProviderController } from "../src/transparent-provider.js";
 
 const model: Model<Api> = { id: "m", name: "Model", provider: "native", api: "openai-completions", baseUrl: "http://localhost", reasoning: false, input: ["text"], contextWindow: 1000, maxTokens: 100, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
-const cfg = { dshBin: "dsh", timeoutMs: 1, mode: "pool" as const, poolMax: 1, poolIdleTtlMs: 1, fullAccess: false, transparent: true, mcpServers: [], persistentTerminal: false };
+const cfg = { dshBin: "dsh", timeoutMs: 1, mode: "pool" as const, poolMax: 1, poolIdleTtlMs: 1, fullAccess: false, mcpServers: [], persistentTerminal: false };
 
 function fixture() {
   const handlers = new Map<string, Array<(event: never, ctx: ExtensionContext) => Promise<void> | void>>();
@@ -27,7 +27,7 @@ function fixture() {
   return { controller, handlers, commands, registrations, unregistrations, nativeStream, get nativeCalls() { return nativeCalls; }, ctx };
 }
 
-test("Prime 0.9.1 registration uses (name, ProviderConfig), keeps the catalog native, and disable restores native", async () => {
+test("Prime 0.9.1 registration uses (name, ProviderConfig) and keeps the catalog native", async () => {
   const f = fixture(); f.controller.register();
   await f.handlers.get("session_start")?.[0]?.({} as never, f.ctx);
   assert.equal(f.registrations.length, 1);
@@ -37,15 +37,10 @@ test("Prime 0.9.1 registration uses (name, ProviderConfig), keeps the catalog na
   assert.equal(config.api, model.api);
   assert.equal(f.ctx.modelRegistry.getAll()[0], model);
 
-  // A second session_start (or duplicate delivery) recovers native before reinstalling.
+  // Transparent wrapping is unconditional (the package's only mode): a second
+  // session_start recovers native then reinstalls the shim.
   await f.handlers.get("session_start")?.[0]?.({} as never, f.ctx);
   assert.equal(f.unregistrations.length, 2);
-  assert.equal(f.registrations.length, 2);
-
-  // The off command unregisters the API shim and leaves native dispatch installed.
-  await f.commands.get("dsh-transparent")?.handler("off", f.ctx);
-  assert.equal(f.controller.isEnabled, false);
-  assert.equal(f.unregistrations.length, 3);
   assert.equal(f.registrations.length, 2);
 });
 

@@ -141,7 +141,7 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
       ? createPrimeUserQuestionAnswerer(ctx.ui)
       : rejectHeadlessUserQuestion;
     bindSessionRuntime(sessionId, providerRuntime);
-    if (ctx.hasUI && providerConfig.transparent) {
+    if (ctx.hasUI) {
       const configHint = providerConfig.loadedFrom ? "" : `; defaults (no ${CONFIG_PATH_FOR_DIAGNOSTICS})`;
       ctx.ui.notify(
         `DSH provider ready (mode=${providerConfig.mode}, poolMax=${providerConfig.poolMax}${configHint}).`,

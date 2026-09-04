@@ -37,13 +37,13 @@ A self-contained [Prime Agent package](https://github.com/PrimeIntellect-ai/prim
 This is **not** a DeepSeek model-provider plugin. The Prime extension launches `dsh --profile acp`, drives it with standard ACP, and routes DSH inference through the model currently selected in Prime. The included DSH bundle uses DSH's stock ACP subagent provider to launch `prime-agent --mode acp` in the reverse direction. DeepSeek Harness remains responsible for its own agent loop, append-only session log, context projection, compaction, tools, skills, subagents, Cordis plugins, and optional memory plugins.
 
 **One mode: transparent.** Installing this package routes sessions through the
-DeepSeek Harness loop under Prime's UI, using the model Prime has selected —
-that is the product's UX, and the only one worth having. It is the default;
-set `"transparent": false` in `dsh.json` only if you want Prime's own loop.
-Modularity is preserved regardless: no global state (kernel modules, other
-packages' tools) is patched or wrapped, packages never depend on this one,
-and anything optional (durable compaction, context shadowing, MCP servers)
-mounts best-effort and degrades cleanly when absent.
+DeepSeek Harness loop under Prime's UI, using the model Prime has selected.
+There is no off switch: it is the product. If you do not want DSH running
+your sessions, do not install the package. Modularity is preserved: no
+global state (kernel modules, other packages' tools) is patched or wrapped,
+packages never depend on this one, and anything optional (durable
+compaction, context shadowing, MCP servers) mounts best-effort and degrades
+cleanly when absent.
 
 > DeepSeek Harness is currently a developer preview and warns that breaking changes are expected. This package pins the DSH runtime and ACP SDK versions exactly.
 

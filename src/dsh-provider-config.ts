@@ -22,7 +22,6 @@ export function loadConfig(): ResolvedConfig {
   const envPoolMax = coercePositiveInt(process.env.PI_DSH_POOL_MAX);
   const envPoolIdle = coercePositiveInt(process.env.PI_DSH_POOL_IDLE_TTL_MS);
   const envFullAccess = coerceFullAccess(process.env.PI_DSH_FULL_ACCESS);
-  const envTransparent = coerceBoolean(process.env.PI_DSH_TRANSPARENT);
 
   return {
     dshBin: envBin || fromFile.parsed.dshBin?.trim() || DEFAULT_DSH_BIN,
@@ -31,7 +30,6 @@ export function loadConfig(): ResolvedConfig {
     poolMax: envPoolMax ?? fromFile.parsed.poolMax ?? DEFAULT_POOL_MAX,
     poolIdleTtlMs: envPoolIdle ?? fromFile.parsed.poolIdleTtlMs ?? DEFAULT_POOL_IDLE_TTL_MS,
     fullAccess: envFullAccess ?? fromFile.parsed.fullAccess ?? false,
-    transparent: envTransparent ?? fromFile.parsed.transparent ?? true,
     mcpServers: mergeMcpServers(fromFile.parsed.mcpServers ?? [], readPrimeMcpServers()),
     persistentTerminal: fromFile.parsed.persistentTerminal ?? false,
     model: readDshDefaultModel(),
@@ -120,7 +118,6 @@ export function coerceConfigFile(value: unknown, path: string): ConfigFile {
     out.poolMax = value.poolMax;
   }
   if (typeof value.fullAccess === "boolean") out.fullAccess = value.fullAccess;
-  if (typeof value.transparent === "boolean") out.transparent = value.transparent;
   if (typeof value.poolIdleTtlMs === "number" && Number.isFinite(value.poolIdleTtlMs) && value.poolIdleTtlMs > 0) {
     out.poolIdleTtlMs = value.poolIdleTtlMs;
   }

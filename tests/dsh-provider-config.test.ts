@@ -1,7 +1,4 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
 import { coerceConfigFile, coercePrimeMcpServers, mergeMcpServers } from "../src/dsh-provider-config.js";
 
@@ -56,22 +53,11 @@ test("explicit dsh.json MCP entries win over inherited Prime entries per serverN
 });
 
 
-test("transparent wrapping is the package default and can be disabled", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "pi-dsh-transparent-default-"));
-  try {
-    const fresh = (await import(`../src/dsh-provider-config.js?default-test=${Date.now()}`)) as {
-      loadConfig: () => { transparent: boolean };
-    };
-    const explicit = (await import(`../src/dsh-provider-config.js?default-test2=${Date.now()}`)) as {
-      loadConfig: () => { transparent: boolean };
-    };
-    process.env.PI_DSH_TRANSPARENT = "1";
-    try {
-      assert.equal(fresh.loadConfig().transparent, true);   // package default: on
-      process.env.PI_DSH_TRANSPARENT = "";
-      assert.equal(explicit.loadConfig().transparent, true); // file default: on
-    } finally { delete process.env.PI_DSH_TRANSPARENT; }
-    process.env.PI_DSH_TRANSPARENT = "0";
-    try { assert.equal(explicit.loadConfig().transparent, false); } finally { delete process.env.PI_DSH_TRANSPARENT; }
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+test("transparent wrapping is unconditional — the resolved config exposes no off switch", async () => {
+  const fresh = (await import(`../src/dsh-provider-config.js?no-toggle-test=${Date.now()}`)) as {
+    loadConfig: () => Record<string, unknown>;
+  };
+  const cfg = fresh.loadConfig();
+  assert.equal("transparent" in cfg, false);
+  assert.equal("transparent" in cfg, false);
 });
