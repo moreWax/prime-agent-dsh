@@ -11,6 +11,7 @@ import { CONFIG_PATH_FOR_DIAGNOSTICS, loadConfig as loadProviderConfig } from ".
 import { bindSessionRuntime, createInstanceRuntime, registerProvider } from "../src/dsh-provider.js";
 import { TransparentProviderController } from "../src/transparent-provider.js";
 import { createPrimeUserQuestionAnswerer, rejectHeadlessUserQuestion } from "../src/prime-user-questions.js";
+import { formatDshCapabilities } from "../src/dsh-capabilities.js";
 
 interface DshDetails {
   sessionId: string;
@@ -277,6 +278,14 @@ DSH session: ${result.sessionId}` }],
       const status = manager.status();
       const selected = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "none";
       ctx.ui.notify(`DSH profile=acp, Prime model=${selected}, runtimes=${status.length}, home=${config.dshHome}`, "info");
+    },
+  });
+
+  pi.registerCommand("dsh-capabilities", {
+    description: "Show evidence-backed capabilities of the embedded DSH base profile",
+    handler: async (_args, ctx) => {
+      await Promise.resolve();
+      ctx.ui.notify(formatDshCapabilities(), "info");
     },
   });
 
