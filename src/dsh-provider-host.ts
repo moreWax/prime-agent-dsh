@@ -4,10 +4,8 @@
 // SESSION_FORMAT_VERSION 0, "no compatibility is implied"). Any dsh upgrade
 // must re-run the plan-002 Phase 1–2 gates before bumping these pins.
 import { createHash } from "node:crypto";
-import { writeFileSync } from "node:fs";
 import { realpath } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { createRequire } from "node:module";
 import { boot, loadOverlayPatches } from "@deepseek-ai/dsh-app-boot";
 import { installModelSelection } from "@deepseek-ai/dsh-agent";
@@ -17,6 +15,8 @@ import { SessionId } from "@deepseek-ai/dsh-session";
 import type { Context } from "@deepseek-ai/cordis";
 import type {} from "@deepseek-ai/dsh-agent-default-model";
 import type {} from "@deepseek-ai/dsh-session-persistence";
+import type { ApprovalOutcome, ApprovalRequest } from "@deepseek-ai/dsh-user-approval";
+import { createPrivateRootConfig } from "./dsh-provider-security.js";
 import { BusyLruPool, type PoolEntry } from "./dsh-agent-pool.js";
 
 const require = createRequire(import.meta.url);
@@ -43,6 +43,7 @@ export interface AgentEntry extends PoolEntry {
   idleTtlMs: number;
   agent: Agent;
   handle: AgentHandle;
+  fullAccess: boolean;
   /** Number of acquired or running turns. Busy entries cannot expire or be evicted. */
   activeUses: number;
   /** Serializes turns per agent (DSH runs one turn at a time). */
@@ -59,6 +60,8 @@ interface TreeState {
 }
 
 const trees = new Map<string, TreeState>();
+export type ApprovalAnswerer = (request: { toolName: string; reason?: string }) => Promise<boolean>;
+const approvalAnswerers = new WeakMap<Agent, ApprovalAnswerer>();
 
 async function canonicalCwd(cwd: string): Promise<string> {
   const absolute = resolve(cwd);
@@ -71,21 +74,31 @@ async function canonicalCwd(cwd: string): Promise<string> {
   }
 }
 
-async function bootTree(workspaceRoot: string): Promise<Context> {
+async function bootTree(workspaceRoot: string, fullAccess: boolean): Promise<Context> {
   const basePatchPath = require.resolve("@deepseek-ai/dsh-base/cordis.patch.yml");
   const patches = loadOverlayPatches("prime-agent-dsh", basePatchPath);
   patches.push({ id: "hmr", disabled: true });
   patches.push({
     id: "sandbox-policy",
-    config: { mode: "danger-full-access", workspaceRoot },
+    config: { mode: fullAccess ? "danger-full-access" : "workspace-write", workspaceRoot },
   });
-  patches.push({ id: "approval", config: { policy: "never" } });
+  patches.push({ id: "approval", config: { policy: fullAccess ? "never" : "ask" } });
 
-  const rootHash = createHash("sha256").update(workspaceRoot).digest("hex").slice(0, 12);
-  const rootConfigPath = join(tmpdir(), `pi-dsh-cordis-${process.pid}-${rootHash}.yml`);
-  writeFileSync(rootConfigPath, "[]\n");
-
-  const ctx = await boot("prime-agent-dsh", rootConfigPath, patches, undefined, import.meta.url);
+  const root = createPrivateRootConfig();
+  let ctx: Context;
+  try {
+    ctx = await boot("prime-agent-dsh", root.path, patches, (bootCtx) => {
+      bootCtx.on("approval/request", async (request: ApprovalRequest, next): Promise<ApprovalOutcome> => {
+        const answer = approvalAnswerers.get(request.agent);
+        if (!answer) return next();
+        return (await answer({ toolName: request.toolName, reason: request.reason }))
+          ? "allowed-once"
+          : "rejected";
+      });
+    }, import.meta.url);
+  } finally {
+    root.cleanup();
+  }
   const agents = ctx.get("agents");
   const defaultModel = ctx.get("agentDefaultModel");
   const persistence = ctx.get("sessionPersistence");
@@ -95,15 +108,16 @@ async function bootTree(workspaceRoot: string): Promise<Context> {
   return ctx;
 }
 
-function getTree(workspaceRoot: string): Promise<Context> {
-  let state = trees.get(workspaceRoot);
+function getTree(workspaceRoot: string, fullAccess = false): Promise<Context> {
+  const treeKey = `${fullAccess ? "full" : "safe"}\0${workspaceRoot}`;
+  let state = trees.get(treeKey);
   if (!state) {
     state = {};
-    trees.set(workspaceRoot, state);
+    trees.set(treeKey, state);
   }
   if (state.context) return Promise.resolve(state.context);
   if (!state.boot) {
-    state.boot = bootTree(workspaceRoot).catch((error: unknown) => {
+    state.boot = bootTree(workspaceRoot, fullAccess).catch((error: unknown) => {
       state.boot = undefined;
       throw error;
     });
@@ -120,7 +134,7 @@ function getTree(workspaceRoot: string): Promise<Context> {
 
 async function disposeAgent(entry: AgentEntry): Promise<void> {
   try {
-    const ctx = await getTree(entry.cwd);
+    const ctx = await getTree(entry.cwd, entry.fullAccess);
     await ctx.get("sessions")?.flush(entry.agent.session);
   } catch {
     // flush is best-effort
@@ -156,14 +170,16 @@ export interface AgentPoolOptions {
   model?: { provider: string; model: string; reasoningEffort?: string };
   poolMax: number;
   idleTtlMs: number;
+  fullAccess: boolean;
+  approvalAnswerer?: ApprovalAnswerer;
 }
 
 export async function getOrCreateAgent(key: string, opts: AgentPoolOptions): Promise<AgentEntry> {
   ensureSweeper();
   const cwd = await canonicalCwd(opts.cwd);
-  const isolatedKey = `${cwd}\0${key}`;
-  return pool.acquire(isolatedKey, opts.poolMax, async () => {
-    const ctx = await getTree(cwd);
+  const isolatedKey = `${opts.fullAccess ? "full" : "safe"}\0${cwd}\0${key}`;
+  const entry = await pool.acquire(isolatedKey, opts.poolMax, async () => {
+    const ctx = await getTree(cwd, opts.fullAccess);
     const agents = ctx.get("agents");
     const defaultModel = ctx.get("agentDefaultModel");
     const persistence = ctx.get("sessionPersistence");
@@ -192,10 +208,12 @@ export async function getOrCreateAgent(key: string, opts: AgentPoolOptions): Pro
     await handle.agent.whenIdle();
     return {
       key: isolatedKey, cwd, sessionId: sid, lastUsedAt: Date.now(),
-      idleTtlMs: opts.idleTtlMs, activeUses: 0,
+      idleTtlMs: opts.idleTtlMs, activeUses: 0, fullAccess: opts.fullAccess,
       agent: handle.agent, handle, turnLock: Promise.resolve(),
     };
   });
+  if (opts.approvalAnswerer) approvalAnswerers.set(entry.agent, opts.approvalAnswerer);
+  return entry;
 }
 
 /** Flush the session log to persistence and dispose the agent handle. */
@@ -253,7 +271,7 @@ export async function runTurn(
       if (signal) signal.removeEventListener("abort", abortHandler);
       // Persist this turn so cross-process resume keeps the full history.
       try {
-        const ctx = await getTree(entry.cwd);
+        const ctx = await getTree(entry.cwd, entry.fullAccess);
         await ctx.get("sessions")?.flush(agent.session);
       } catch {
         // flush is best-effort

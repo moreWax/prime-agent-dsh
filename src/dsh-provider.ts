@@ -29,6 +29,7 @@ export interface InstanceRuntime {
   cwd: string;
   /** Stable identity of the Pi CONVERSATION (session id, survives resume). */
   sessionKey: string;
+  approvalAnswerer?: (request: { toolName: string; reason?: string }) => Promise<boolean>;
 }
 
 export function createInstanceRuntime(): InstanceRuntime {
@@ -127,7 +128,14 @@ function streamDshPool(
         );
       }
 
-      const entry = await getOrCreateAgent(runtime.sessionKey, { cwd: runtime.cwd, model: cfg.model, poolMax: cfg.poolMax, idleTtlMs: cfg.poolIdleTtlMs });
+      const entry = await getOrCreateAgent(runtime.sessionKey, {
+        cwd: runtime.cwd,
+        model: cfg.model,
+        poolMax: cfg.poolMax,
+        idleTtlMs: cfg.poolIdleTtlMs,
+        fullAccess: cfg.fullAccess,
+        approvalAnswerer: runtime.approvalAnswerer,
+      });
       entryRef = entry;
       const translator = new TurnTranslator(output, stream);
 

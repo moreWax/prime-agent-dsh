@@ -2,7 +2,9 @@
 
 The plugin registers a `dsh` provider in Prime’s model picker. Selecting it routes each Prime turn into an in-process DeepSeek Harness tree. DSH owns the full agent loop, context, tools, skills, memory, subagents, and compaction. Prime only displays the streamed assistant text, reasoning, and tool activity.
 
-Selecting this provider is an install-time trust decision. Its embedded DSH tree uses `danger-full-access` with approval disabled, because no safe synchronous bridge exists from DSH tool approval into Prime’s UI.
+The provider is workspace-confined by default. Its embedded DSH tree uses `workspace-write` with approval policy `ask`. DSH alpha.5 approval requests are bridged to Prime's confirmation UI and grant only the requested action. Non-interactive sessions have no answerer and fail closed. Set `"fullAccess": true` in `~/.pi/agent/dsh.json`, or the exact environment value `PI_DSH_FULL_ACCESS=1`, only when unrestricted host access without prompts is intended.
+
+The Loader boot config is created exclusively as mode `0600` inside an unpredictable, owner-only `0700` temporary directory, then removed after boot. This prevents predictable-name symlink replacement.
 
 The default `pool` mode keeps one persistent DSH session per Prime conversation. Sessions survive host-level Prime session disposal and are reclaimed by idle TTL and LRU limits. Configure it with `~/.prime/agent/dsh.json` (or `$PRIME_AGENT_HOME/dsh.json`) or `PI_DSH_MODE`, `PI_DSH_POOL_MAX`, and `PI_DSH_POOL_IDLE_TTL_MS`. The `oneshot` mode remains a subprocess fallback. The embedded API and its complete `@deepseek-ai/dsh-*` dependency graph are pinned to DeepSeek Harness `0.1.2-alpha.5`.
 

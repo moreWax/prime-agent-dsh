@@ -77,6 +77,12 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
     providerRuntime.cwd = ctx.cwd;
     const sessionId = ctx.sessionManager.getSessionId?.() ?? ctx.cwd;
     providerRuntime.sessionKey = sessionId;
+    providerRuntime.approvalAnswerer = ctx.hasUI
+      ? ({ toolName, reason }) => ctx.ui.confirm(
+          `DSH permission: ${toolName}`,
+          reason ?? "Allow this operation once outside the workspace sandbox?",
+        )
+      : undefined;
     bindSessionRuntime(sessionId, providerRuntime);
     if (ctx.hasUI) {
       const configHint = providerConfig.loadedFrom ? "" : `; defaults (no ${CONFIG_PATH_FOR_DIAGNOSTICS})`;

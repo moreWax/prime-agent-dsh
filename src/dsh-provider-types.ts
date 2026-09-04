@@ -10,6 +10,8 @@ export interface ConfigFile {
   poolMax?: number;
   /** Idle time before a pooled session is closed, in ms. Default 15min. */
   poolIdleTtlMs?: number;
+  /** Explicitly disable the workspace sandbox and all approval prompts. */
+  fullAccess?: boolean;
 }
 
 /** DSH's configured default model (`~/.dsh/settings.yaml` → agent-default-model). */
@@ -26,6 +28,8 @@ export interface ResolvedConfig {
   mode: "pool" | "oneshot";
   poolMax: number;
   poolIdleTtlMs: number;
+  /** True only after an explicit config or exact env opt-in. */
+  fullAccess: boolean;
   /**
    * The real model DSH is configured to run, read from its settings.yaml at
    * load time. Undefined when unreadable — the catalog then falls back to the
