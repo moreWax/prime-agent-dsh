@@ -65,9 +65,9 @@ try {
   const pkg = JSON.parse(readFileSync(join(here, "package.json"), "utf8"));
   check("embedded DSH remains pinned to alpha.5", () => {
     assert.equal(pkg.dependencies["@deepseek-ai/dsh-app-boot"], "0.1.2-alpha.5");
-    const dshOverrides = Object.entries(pkg.overrides).filter(([name]) => name.startsWith("@deepseek-ai/dsh"));
-    assert.ok(dshOverrides.length > 100);
-    assert.ok(dshOverrides.every(([, version]) => version === "0.1.2-alpha.5"));
+    const dshDependencies = Object.entries(pkg.dependencies).filter(([name]) => name.startsWith("@deepseek-ai/dsh"));
+    assert.ok(dshDependencies.length > 100);
+    assert.ok(dshDependencies.every(([, version]) => version === "0.1.2-alpha.5"));
   });
 
   const nativeModel = {
