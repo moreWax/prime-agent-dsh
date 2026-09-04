@@ -1,7 +1,7 @@
 import http from "node:http";
 
 const port = Number(process.argv[2] ?? 0);
-const stats = { requests: 0, toolRequests: 0, abortedRequests: 0, observations: [] };
+const stats = { requests: 0, toolRequests: 0, abortedRequests: 0, observations: [], toolsSeen: [] };
 let previousMessages = [];
 const server = http.createServer(async (req, res) => {
   if (req.method === "GET" && req.url === "/stats") {
@@ -22,6 +22,7 @@ const server = http.createServer(async (req, res) => {
   stats.observations.push({ messageCount: messages.length, previousMessageCount: previousMessages.length, commonPrefixMessages });
   if (stats.observations.length > 32) stats.observations.shift();
   previousMessages = structuredClone(messages);
+  stats.toolsSeen = [...new Set([...(stats.toolsSeen ?? []), ...(body.tools ?? []).map((tool) => tool.function?.name).filter(Boolean)])];
   const flattened = JSON.stringify(messages);
   const latest = [...messages].reverse().find((m) => m.role === "user")?.content ?? "";
   if (String(latest).includes("ABORT_SLOW")) {
@@ -30,7 +31,26 @@ const server = http.createServer(async (req, res) => {
     if (res.destroyed) return;
   }
   let chunks;
-  if (String(latest).includes("ESCAPE_TOOL") && !flattened.includes("escape-attempt-finished")) {
+  const toolCall = (id, name, args) => {
+    stats.toolRequests++;
+    return [
+      { choices: [{ delta: { role: "assistant", tool_calls: [{ index: 0, id, type: "function", function: { name, arguments: JSON.stringify(args) } }] } }] },
+      { choices: [{ delta: {}, finish_reason: "tool_calls" }] },
+    ];
+  };
+  if (String(latest).includes("SUBAGENT_PROBE") && !flattened.includes("embedded-child-ok")) {
+    chunks = toolCall("call_subagent_probe", "subagent", { description: "embedded child probe", prompt: "CHILD_PROBE: reply exactly embedded-child-ok", run_in_background: false });
+  } else if (String(latest).includes("WORKFLOW_PROBE") && !flattened.includes("workflow-child-ok")) {
+    chunks = toolCall("call_workflow_probe", "workflow", {
+      meta: { name: "embedded-probe", description: "One bounded child probe" },
+      script: "const answer = await agent('WORKFLOW_CHILD_PROBE: reply exactly workflow-child-ok'); return { answer }",
+    });
+  } else if (String(latest).includes("JOBS_PROBE") && !flattened.includes("started background subagent job")) {
+    chunks = toolCall("call_jobs_start_probe", "subagent_fork", { description: "background jobs probe", prompt: "JOB_CHILD_PROBE: reply exactly job-child-ok", run_in_background: true });
+  } else if (String(latest).includes("JOBS_PROBE") && flattened.includes("started background subagent job") && !flattened.includes('"name":"job_output"')) {
+    const match = flattened.match(/started background subagent job ([a-z]+-\d+)/);
+    chunks = toolCall("call_jobs_output_probe", "job_output", { job_id: match?.[1] ?? "subagent-1", wait: true, timeout_ms: 5000 });
+  } else if (String(latest).includes("ESCAPE_TOOL") && !flattened.includes("escape-attempt-finished")) {
     stats.toolRequests++;
     chunks = [
       { choices: [{ delta: { role: "assistant", tool_calls: [{ index: 0, id: "call_escape_1", type: "function", function: { name: "bash", arguments: "" } }] } }] },
@@ -46,7 +66,13 @@ const server = http.createServer(async (req, res) => {
     ];
   } else {
     let text = "ok";
-    if (Array.isArray(latest)
+    if (String(latest).includes("CHILD_PROBE")) text = "embedded-child-ok";
+    else if (String(latest).includes("WORKFLOW_CHILD_PROBE")) text = "workflow-child-ok";
+    else if (String(latest).includes("JOB_CHILD_PROBE")) text = "job-child-ok";
+    else if (String(latest).includes("SUBAGENT_PROBE")) text = "parent-subagent-ok";
+    else if (String(latest).includes("WORKFLOW_PROBE")) text = "parent-workflow-ok";
+    else if (String(latest).includes("JOBS_PROBE")) text = flattened.includes("job-child-ok") ? "parent-jobs-ok" : "parent-jobs-missing";
+    else if (Array.isArray(latest)
       && latest[0]?.type === "text" && latest[0].text === "IMAGE_TEST before"
       && latest.at(-2)?.type === "image_url" && latest.at(-2).image_url?.url?.startsWith("data:image/webp;base64,")
       && latest.at(-1)?.type === "text" && latest.at(-1).text === " after") text = "image-order-ok";

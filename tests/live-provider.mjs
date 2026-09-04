@@ -140,6 +140,18 @@ try {
   ]);
   check("pooled turn admits and routes a live deterministic image", () => assert.equal(image.text, "image-order-ok"));
 
+  const subagent = await turn("SUBAGENT_PROBE: delegate the probe through subagent and report success.");
+  check("embedded DSH runs a deterministic foreground subagent", () => assert.equal(subagent.text, "parent-subagent-ok"));
+  const workflow = await turn("WORKFLOW_PROBE: run the requested one-child workflow and report success.");
+  check("embedded DSH runs a bounded worker-thread workflow", () => assert.equal(workflow.text, "parent-workflow-ok"));
+  const jobs = await turn("JOBS_PROBE: start the child in the background, collect it with job_output, then report success.");
+  check("embedded DSH starts and collects a background child job", () => assert.equal(jobs.text, "parent-jobs-ok"));
+  const behavioralStats = await stats();
+  check("embedded tree exposes the three probed model tool surfaces", () => {
+    for (const name of ["subagent", "workflow", "job_output", "job_list", "job_kill"])
+      assert.ok(behavioralStats.toolsSeen.includes(name), `missing ${name}`);
+  });
+
   const beforeTool = await stats();
   const tool = await turn("NATIVE_TOOL");
   const afterTool = await stats();

@@ -30,6 +30,18 @@ const require = createRequire(import.meta.url);
 
 const SWEEP_INTERVAL_MS = 60 * 1000;
 
+/** Safety policy applied on top of the stock DSH base profile. */
+export const EMBEDDED_OPERATION_LIMITS = Object.freeze({
+  subagentMaxDepth: 2,
+  workflowMaxConcurrentAgents: 4,
+  workflowMaxTotalAgents: 16,
+  workflowMaxItemsPerCall: 64,
+  workflowSyncTimeoutMs: 2_000,
+  workflowDisposeGraceMs: 2_000,
+  jobWaitTimeoutMs: 5_000,
+  jobMaxWaitTimeoutMs: 30_000,
+});
+
 // ---------------------------------------------------------------------------
 // Shapes handed to providers.ts (kept free of @deepseek-ai types)
 // ---------------------------------------------------------------------------
@@ -89,6 +101,26 @@ async function bootTree(workspaceRoot: string, fullAccess: boolean, route: Prepa
   const patches = loadOverlayPatches("prime-agent-dsh", basePatchPath);
   patches.push(...loadOverlayPatches("prime-agent-dsh-route", route.modelPatch));
   patches.push({ id: "hmr", disabled: true });
+  // The stock base profile intentionally supports large standalone workloads.
+  // Embedded turns need tighter, deterministic bounds so a single model call
+  // cannot create an unbounded child fan-out or wait on a job for minutes.
+  patches.push({ id: "tool-subagent", config: {
+    provider: "spawn", toolName: "subagent", backgroundMode: "continuable",
+    maxDepth: EMBEDDED_OPERATION_LIMITS.subagentMaxDepth,
+  } });
+  patches.push({ id: "workflow-worker-thread", config: {
+    provider: "spawn",
+    maxConcurrentAgents: EMBEDDED_OPERATION_LIMITS.workflowMaxConcurrentAgents,
+    maxTotalAgents: EMBEDDED_OPERATION_LIMITS.workflowMaxTotalAgents,
+    maxItemsPerCall: EMBEDDED_OPERATION_LIMITS.workflowMaxItemsPerCall,
+    syncTimeoutMs: EMBEDDED_OPERATION_LIMITS.workflowSyncTimeoutMs,
+    disposeGraceMs: EMBEDDED_OPERATION_LIMITS.workflowDisposeGraceMs,
+  } });
+  patches.push({ id: "tool-jobs", config: {
+    waitTimeoutMs: EMBEDDED_OPERATION_LIMITS.jobWaitTimeoutMs,
+    maxWaitTimeoutMs: EMBEDDED_OPERATION_LIMITS.jobMaxWaitTimeoutMs,
+    completionDelivery: "quiet", maxConsecutiveWakes: 1,
+  } });
   patches.push({
     id: "sandbox-policy",
     config: { mode: fullAccess ? "danger-full-access" : "workspace-write", workspaceRoot },
