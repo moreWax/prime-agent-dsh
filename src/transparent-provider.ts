@@ -81,7 +81,9 @@ export class TransparentProviderController {
       getModels: () => provider.getModels(),
       ...(provider.refreshModels ? { refreshModels: (context) => provider.refreshModels!(context) } : {}),
       ...(provider.filterModels ? { filterModels: (models, credential) => provider.filterModels!(models, credential) } : {}),
-      stream: (model, context, options) => provider.stream(model, context, options),
+      // Prime's agent loop calls stream(), while helpers may call streamSimple().
+      // Both must enter DSH or transparent mode silently bypasses the harness.
+      stream: (model, context, options) => this.dispatch(provider, model, context, options as SimpleStreamOptions),
       streamSimple: (model, context, options) => this.dispatch(provider, model, context, options),
       ...(provider.fetchDeferred ? { fetchDeferred: (model, handle, options) => provider.fetchDeferred!(model, handle, options) } : {}),
       ...(provider.cancelDeferred ? { cancelDeferred: (model, handle, options) => provider.cancelDeferred!(model, handle, options) } : {}),

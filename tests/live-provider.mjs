@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { spawn } from "node:child_process";
@@ -14,6 +14,14 @@ const root = mkdtempSync(join(tmpdir(), "prime-agent-dsh-live-"));
 const home = join(root, "dsh-home");
 const workspace = join(root, "workspace");
 mkdirSync(home); mkdirSync(workspace);
+const skillDir = join(workspace, ".dsh", "skills", "integration-probe");
+mkdirSync(skillDir, { recursive: true });
+writeFileSync(join(skillDir, "SKILL.md"), `---
+name: integration-probe
+description: Deterministic embedded bridge integration probe.
+---
+Return BRIDGE_SKILL_SENTINEL to prove this body was loaded by DSH.
+`);
 const marker = join(workspace, "native-marker.txt");
 const outsideMarker = join(process.env.HOME ?? "/", `.prime-dsh-live-must-not-write-${process.pid}`);
 process.env.DSH_HOME = home;
@@ -150,6 +158,36 @@ try {
   check("embedded tree exposes the three probed model tool surfaces", () => {
     for (const name of ["subagent", "workflow", "job_output", "job_list", "job_kill"])
       assert.ok(behavioralStats.toolsSeen.includes(name), `missing ${name}`);
+  const beforeBehavior = await stats();
+  const skill = await turn("SKILL_PROBE load integration-probe.");
+  check("embedded DSH advertises and executes its skill tool", () => {
+    assert.equal(skill.text, "skill-loaded-ok");
+    assert.ok(!skill.events.some((type) => type.startsWith("toolcall_")));
+  });
+  const goalCreate = await turn("GOAL_PROBE create the requested durable goal.");
+  check("embedded DSH executes its persisted goal tool", () => {
+    assert.equal(goalCreate.text, "goal-created-ok");
+    assert.ok(!goalCreate.events.some((type) => type.startsWith("toolcall_")));
+  });
+  const goalRecall = await turn("GOAL_RECALL inspect the same-session goal.");
+  const afterBehavior = await stats();
+  check("DSH goal state survives a later transparent turn", () => assert.match(goalRecall.text, /goal-persisted-ok/));
+  check("behavior probes used DSH internal tools and exposed no Prime tool calls", () => {
+    assert.deepEqual(afterBehavior.calledToolNames.slice(beforeBehavior.calledToolNames.length), ["skill", "create_goal", "get_goal"]);
+    const advertised = afterBehavior.requestedToolNames.slice(beforeBehavior.requestedToolNames.length).flat();
+    assert.ok(advertised.includes("skill") && advertised.includes("create_goal") && advertised.includes("get_goal"));
+    assert.ok(![...skill.events, ...goalCreate.events, ...goalRecall.events].some((type) => type.startsWith("toolcall_")));
+  });
+
+  const beforeCompact = await stats();
+  const compacted = await turn("COMPACTION_PRUNE exercise DSH-owned tool result compaction.");
+  const afterCompact = await stats();
+  check("embedded DSH prunes oversized internal tool results before the next model step", () => {
+    assert.equal(compacted.text, "compaction-pruned-ok");
+    assert.equal(afterCompact.requests - beforeCompact.requests, 2);
+    assert.deepEqual(afterCompact.calledToolNames.slice(beforeCompact.calledToolNames.length), ["bash"]);
+    assert.ok(!compacted.events.some((type) => type.startsWith("toolcall_")));
+
   });
 
   const beforeTool = await stats();
@@ -187,9 +225,10 @@ try {
     streamSimple: () => { throw new Error("native stream must not run while transparent wrapping is enabled"); },
   };
   let transparentProvider;
+  const transparentSessionId = `transparent-${Date.now()}`;
   const transparentCtx = {
     cwd: workspace, thinkingLevel: "off", hasUI: false,
-    sessionManager: { getSessionId: () => `transparent-${Date.now()}` },
+    sessionManager: { getSessionId: () => transparentSessionId },
     modelRegistry: {
       getAll: () => [nativeModel], getProvider: () => nativeProvider,
       getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "not-a-vendor-key" }),
@@ -206,7 +245,7 @@ try {
     assert.equal(transparentProvider.getModels()[0].id, "mock-1");
     assert.equal(transparentProvider.auth, nativeProvider.auth);
   });
-  const transparentStream = transparentProvider.streamSimple(nativeModel, {
+  const transparentStream = transparentProvider.stream(nativeModel, {
     messages: [{ role: "user", content: "Reply transparent-ok.", timestamp: Date.now() }], tools: [],
   }, { sessionId: transparentCtx.sessionManager.getSessionId() });
   const transparentEvents = [];
@@ -215,6 +254,30 @@ try {
   check("normal native selection executes through in-process DSH", () => {
     assert.equal(transparentResult.stopReason, "stop", transparentResult.errorMessage);
     assert.ok(transparentEvents.includes("text_delta"));
+  });
+
+  async function transparentTurn(content) {
+    const stream = transparentProvider.stream(nativeModel, {
+      messages: [{ role: "user", content, timestamp: Date.now() }], tools: [],
+    }, { sessionId: transparentCtx.sessionManager.getSessionId() });
+    const events = [];
+    for await (const event of stream) events.push(event.type);
+    const result = await stream.result();
+    return { result, events, text: (result?.content ?? []).filter((block) => block.type === "text").map((block) => block.text).join("") };
+  }
+  const transparentBefore = await stats();
+  const transparentSkill = await transparentTurn("SKILL_PROBE load integration-probe through transparent routing.");
+  const transparentGoal = await transparentTurn("GOAL_PROBE create the transparent durable goal.");
+  const transparentGoalRecall = await transparentTurn("GOAL_RECALL inspect the transparent same-session goal.");
+  const transparentCompact = await transparentTurn("COMPACTION_PRUNE exercise transparent DSH-owned compaction.");
+  const transparentAfter = await stats();
+  check("transparent DSH owns skill, goal, and compaction tool loops", () => {
+    assert.equal(transparentSkill.text, "skill-loaded-ok");
+    assert.equal(transparentGoal.text, "goal-created-ok");
+    assert.match(transparentGoalRecall.text, /goal-persisted-ok/);
+    assert.equal(transparentCompact.text, "compaction-pruned-ok");
+    assert.deepEqual(transparentAfter.calledToolNames.slice(transparentBefore.calledToolNames.length), ["skill", "create_goal", "get_goal", "bash"]);
+    assert.ok(![...transparentSkill.events, ...transparentGoal.events, ...transparentGoalRecall.events, ...transparentCompact.events].some((type) => type.startsWith("toolcall_")));
   });
 
   const privateRoot = createPrivateRootConfig();

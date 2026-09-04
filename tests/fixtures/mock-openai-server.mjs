@@ -1,7 +1,7 @@
 import http from "node:http";
 
 const port = Number(process.argv[2] ?? 0);
-const stats = { requests: 0, toolRequests: 0, abortedRequests: 0, observations: [], toolsSeen: [] };
+const stats = { requests: 0, toolRequests: 0, abortedRequests: 0, observations: [], toolsSeen: [], requestedToolNames: [], calledToolNames: [] };
 let previousMessages = [];
 const server = http.createServer(async (req, res) => {
   if (req.method === "GET" && req.url === "/stats") {
@@ -15,6 +15,7 @@ const server = http.createServer(async (req, res) => {
   let raw = "";
   for await (const chunk of req) raw += chunk;
   const body = JSON.parse(raw);
+  stats.requestedToolNames.push((body.tools ?? []).map((tool) => tool.function?.name ?? tool.name));
   const messages = body.messages ?? [];
   let commonPrefixMessages = 0;
   while (commonPrefixMessages < previousMessages.length && commonPrefixMessages < messages.length
@@ -50,6 +51,29 @@ const server = http.createServer(async (req, res) => {
   } else if (String(latest).includes("JOBS_PROBE") && flattened.includes("started background subagent job") && !flattened.includes('"name":"job_output"')) {
     const match = flattened.match(/started background subagent job ([a-z]+-\d+)/);
     chunks = toolCall("call_jobs_output_probe", "job_output", { job_id: match?.[1] ?? "subagent-1", wait: true, timeout_ms: 5000 });
+  const callTool = (name, args, id) => {
+    stats.toolRequests++;
+    stats.calledToolNames.push(name);
+    return [
+      { choices: [{ delta: { role: "assistant", tool_calls: [{ index: 0, id, type: "function", function: { name, arguments: "" } }] } }] },
+      { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: JSON.stringify(args) } }] } }] },
+      { choices: [{ delta: {}, finish_reason: "tool_calls" }] },
+    ];
+  };
+  else if (String(latest).includes("COMPACTION_PRUNE") && !flattened.includes("call_compact_bash")) {
+    chunks = callTool("bash", { command: "node -e \"process.stdout.write('COMPACT_HEAD'+('MIDDLE_SECRET_'.repeat(24000))+'COMPACT_TAIL')\"", description: "Produce deterministic oversized tool output" }, "call_compact_bash");
+    chunks.at(-1).usage = { prompt_tokens: 60000, completion_tokens: 2, total_tokens: 60002 };
+  } else if (String(latest).includes("GOAL_PROBE") && !flattened.includes("call_goal_create")) {
+    chunks = callTool("create_goal", { objective: "Ship deterministic bridge probe", max_goal_rounds: 2 }, "call_goal_create");
+  } else if (String(latest).includes("GOAL_RECALL")) {
+    if (!flattened.includes("call_goal_get")) chunks = callTool("get_goal", {}, "call_goal_get");
+    else chunks = [
+      { choices: [{ delta: { role: "assistant", content: "goal-persisted-ok" } }] },
+      { choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 } },
+    ];
+  } else if (String(latest).includes("SKILL_PROBE") && !flattened.includes("BRIDGE_SKILL_SENTINEL")) {
+    chunks = callTool("skill", { name: "integration-probe" }, "call_skill_load");
+
   } else if (String(latest).includes("ESCAPE_TOOL") && !flattened.includes("escape-attempt-finished")) {
     stats.toolRequests++;
     chunks = [
@@ -77,6 +101,10 @@ const server = http.createServer(async (req, res) => {
       && latest.at(-2)?.type === "image_url" && latest.at(-2).image_url?.url?.startsWith("data:image/webp;base64,")
       && latest.at(-1)?.type === "text" && latest.at(-1).text === " after") text = "image-order-ok";
     else if (String(latest).includes("RECALL_TOKEN")) text = flattened.includes("COLD_ZEBRA") ? "COLD_ZEBRA" : flattened.includes("ZEBRA_XYZZY") ? "ZEBRA_XYZZY" : "missing";
+    else if (String(latest).includes("COMPACTION_PRUNE")) text = flattened.includes("[... tool result middle pruned ...]") && flattened.includes("COMPACT_HEAD") && flattened.includes("COMPACT_TAIL") ? "compaction-pruned-ok" : "compaction-not-observed";
+    else if (String(latest).includes("GOAL_PROBE") && flattened.includes("call_goal_create")) text = "goal-created-ok";
+    else if (String(latest).includes("SKILL_PROBE") && flattened.includes("BRIDGE_SKILL_SENTINEL")) text = "skill-loaded-ok";
+
     else if (String(latest).includes("ESCAPE_TOOL")) text = "escape-checked";
     else if (flattened.includes("native-dsh-tool-result")) text = "native-dsh-tool-ok";
     else if (String(latest).includes("ABORT_SLOW")) text = "too-late";
