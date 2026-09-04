@@ -22,7 +22,7 @@ function registrationName(api: Api): string {
   return `${REGISTRATION_PREFIX}${encodeURIComponent(api)}`;
 }
 
-type TransparentProviderHost = Pick<ExtensionAPI, "on" | "registerProvider" | "unregisterProvider">;
+type TransparentProviderHost = Pick<ExtensionAPI, "on" | "registerCommand" | "registerProvider" | "unregisterProvider">;
 
 export interface TransparentProviderControllerOptions {
   dshHome: (ctx: ExtensionContext) => string;
@@ -36,6 +36,7 @@ export interface TransparentProviderControllerOptions {
  * leave native provider/model ids, catalogs, request config and OAuth untouched.
  */
 export class TransparentProviderController {
+  private enabled = true;
   private readonly runtime: InstanceRuntime = createInstanceRuntime();
   private readonly routes = new PrimeRouteRegistry();
   private readonly nativeStreams = new Map<Api, StreamSimple>();
@@ -44,15 +45,35 @@ export class TransparentProviderController {
 
   constructor(private readonly pi: TransparentProviderHost, private readonly cfg: ResolvedConfig, private readonly options: TransparentProviderControllerOptions) {}
 
-  /** Transparent DSH wrapping is unconditional: it is the package's only mode. */
+  /**
+   * DSH runs transparent by default in every session. The session-scoped
+   * command enables or disables it for the current session only — never
+   * persisted, and re-enabled at the start of each session.
+   */
   register(): void {
     this.pi.on("session_start", async (_event, ctx) => {
       await Promise.resolve();
+      this.enabled = true;
       this.bind(ctx);
       this.captureAndPublish(ctx);
     });
+    this.pi.registerCommand("dsh-session", {
+      description: "Enable or disable DSH for this session (on|off|status)",
+      handler: async (args, ctx) => {
+        await Promise.resolve();
+        const value = args.trim().toLowerCase();
+        if (value === "on") this.enabled = true;
+        else if (value === "off") this.enabled = false;
+        else if (value !== "status") { ctx.ui.notify("Usage: /dsh-session on|off|status", "warning"); return; }
+        this.bind(ctx);
+        this.captureAndPublish(ctx);
+        ctx.ui.notify(`DSH is ${this.enabled ? "enabled" : "disabled"} for this session.`, "info");
+      },
+    });
     this.pi.on("session_shutdown", async () => { await this.routes.closeAll(); });
   }
+
+  get isEnabled(): boolean { return this.enabled; }
 
   private bind(ctx: ExtensionContext): void {
     this.ctx = ctx;
@@ -74,6 +95,7 @@ export class TransparentProviderController {
     // Unregistering first makes Prime rebuild the native registry and reapply
     // other dynamic providers.
     for (const api of this.knownApis) this.pi.unregisterProvider(registrationName(api));
+    if (!this.enabled) return; // session-scoped off: native providers resume
     this.nativeStreams.clear();
     for (const api of this.knownApis) {
       const native = this.options.getNativeStream?.(api)
@@ -94,7 +116,7 @@ export class TransparentProviderController {
   private dispatch(model: Model<Api>, context: Parameters<StreamSimple>[1], options?: SimpleStreamOptions) {
     const native = this.nativeStreams.get(model.api);
     if (!native) throw new Error(`Native streamSimple is unavailable for API ${model.api}`);
-    if (INTERNAL_PROVIDERS.has(model.provider)) return native(model, context, options);
+    if (!this.enabled || INTERNAL_PROVIDERS.has(model.provider)) return native(model, context, options);
     const ctx = this.ctx;
     if (!ctx) return native(model, context, options);
     this.runtime.resolveRoute = async () => {

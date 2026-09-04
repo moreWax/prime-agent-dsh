@@ -72,6 +72,8 @@ prime-agent -e ./extensions/index.ts
 Ask Prime Agent to delegate a task to DeepSeek Harness, or explicitly use the tool:
 
 - Tool: `deepseek_harness`
+- **`/dsh-session on|off|status`** — enable or disable DSH for the current session only
+  (defaults on; resets at each session start; never persisted).
 - Command: `/dsh <task>`
 - Status: `/dsh-status`
 - Full route check: `/dsh-doctor`
