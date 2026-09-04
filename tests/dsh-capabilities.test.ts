@@ -25,8 +25,9 @@ test("every claim has typed status and concrete evidence", () => {
 
 test("registry avoids known overclaims", () => {
   const byId = Object.fromEntries(DSH_CAPABILITIES.map((item) => [item.id, item]));
-  assert.equal(byId.images?.status, "degraded");
-  assert.equal(byId.questions?.status, "degraded");
+  assert.equal(byId.images?.status, "verified");
+  assert.equal(byId.questions?.status, "verified");
+  assert.equal(byId.plan?.status, "verified");
   assert.equal(byId.mcp?.status, "unavailable");
   assert.equal(byId.terminals?.status, "unavailable");
   assert.equal(byId.web?.status, "degraded");
@@ -35,7 +36,7 @@ test("registry avoids known overclaims", () => {
 
 test("human report includes status totals, each capability, and probe caveat", () => {
   const output = formatDshCapabilities();
-  assert.match(output, /verified=0, loaded=7, degraded=3, unavailable=2/);
+  assert.match(output, /verified=3, loaded=6, degraded=1, unavailable=2/);
   for (const item of DSH_CAPABILITIES) assert.match(output, new RegExp(`^${item.label}: ${item.status}`, "m"));
   assert.match(output, /does not probe credentials or external services/);
 });
