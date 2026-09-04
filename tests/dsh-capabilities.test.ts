@@ -31,12 +31,13 @@ test("registry avoids known overclaims", () => {
   assert.equal(byId.mcp?.status, "unavailable");
   assert.equal(byId.terminals?.status, "unavailable");
   assert.equal(byId.web?.status, "degraded");
-  assert.match(byId.cache?.summary ?? "", /not a general response cache/);
+  assert.equal(byId.cache?.status, "verified");
+  assert.match(byId.cache?.summary ?? "", /provider-reported cache reads/);
 });
 
 test("human report includes status totals, each capability, and probe caveat", () => {
   const output = formatDshCapabilities();
-  assert.match(output, /verified=3, loaded=6, degraded=1, unavailable=2/);
+  assert.match(output, /verified=4, loaded=5, degraded=1, unavailable=2/);
   for (const item of DSH_CAPABILITIES) assert.match(output, new RegExp(`^${item.label}: ${item.status}`, "m"));
   assert.match(output, /does not probe credentials or external services/);
 });
