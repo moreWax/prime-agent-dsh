@@ -4,7 +4,7 @@ By default, users select ordinary Prime models exactly as before. Provider IDs, 
 
 The legacy `dsh` picker entry remains available for compatibility. Selecting it also routes each Prime turn into an in-process DeepSeek Harness tree. DSH owns the full agent loop, context, tools, skills, memory, subagents, and compaction. Prime only displays the streamed assistant text, reasoning, and tool activity.
 
-The provider is workspace-confined by default. Its embedded DSH tree uses `workspace-write` with approval policy `ask`. DSH alpha.5 approval requests are bridged to Prime's confirmation UI and grant only the requested action. Non-interactive sessions have no answerer and fail closed. Set `"fullAccess": true` in `~/.pi/agent/dsh.json`, or the exact environment value `PI_DSH_FULL_ACCESS=1`, only when unrestricted host access without prompts is intended.
+The provider is workspace-confined by default. Its embedded DSH tree uses `workspace-write` with approval policy `ask`. DSH alpha.5 approval requests are bridged to Prime's confirmation UI and grant only the requested action. Non-interactive sessions have no answerer and fail closed. Set `"fullAccess": true` in `~/.prime/agent/dsh.json`, or the exact environment value `PI_DSH_FULL_ACCESS=1`, only when unrestricted host access without prompts is intended.
 
 The Loader boot config is created exclusively as mode `0600` inside an unpredictable, owner-only `0700` temporary directory, then removed after boot. This prevents predictable-name symlink replacement.
 
@@ -117,6 +117,10 @@ Prime and DSH intentionally keep separate histories:
 The bridge does **not** replay Prime's complete transcript into DSH. Doing that would duplicate context and undermine DSH's invariant that model-visible inputs are reconstructable from its session log.
 
 Memory behavior depends on the selected DSH profile and installed DSH plugins. The bridge preserves those features; it does not pretend every optional memory plugin is installed.
+
+## Capability evidence
+
+Run `/dsh-capabilities` to see an evidence-backed inventory. `loaded` means the pinned `dsh-base` composition mounts the service; it does not mean the integration path has been exercised. `verified` requires bridge or live-test evidence. Current verified bridge paths include raster images (PNG, JPEG, WebP, GIF), structured user questions and plan review, while optional MCP and persistent PTY terminals are not part of the stock embedded base composition. Goals, compaction, subagents, workflows, jobs, and projection cache are loaded but remain separately classified until focused behavioral probes cover them. Web fetch/search is credential-dependent. The capability report is deliberately conservative and does not treat an installed package as loaded.
 
 ## Security and limitations
 
