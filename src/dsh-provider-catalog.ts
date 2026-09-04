@@ -1,6 +1,5 @@
 import type { Api } from "@earendil-works/pi-ai";
 import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
-import type { DshModelSelection } from "./dsh-provider-types.js";
 
 export const PROVIDER_ID = "dsh";
 export const PROVIDER_API = "dsh-exec" as Api;
@@ -29,25 +28,10 @@ const FALLBACK_MODEL: ProviderModelConfig = {
 };
 
 /**
- * Build the Pi catalog. When DSH's configured default model was read
- * successfully (`~/.dsh/settings.yaml` → `agent-default-model`), the catalog
- * shows THAT real model (e.g. `dsh/deepseek-v4-pro`) so the picker matches
- * what the harness actually runs; otherwise it falls back to the synthetic
- * `dsh-harness` entry. DSH owns model selection — pi-dsh never invents models.
+ * Keep one stable Prime model identity. The selected model is an execution
+ * harness, not a snapshot of DSH settings. DSH resolves its provider, model,
+ * and reasoning effort together when a new pooled agent is created.
  */
-export function buildModels(configured: DshModelSelection | undefined): ProviderModelConfig[] {
-  if (configured?.provider && configured.model) {
-    return [
-      {
-        id: configured.model,
-        name: `${configured.model} (DSH · ${configured.provider})`,
-        reasoning: true,
-        input: ["text"],
-        cost: { ...ZERO_COST },
-        contextWindow: CONTEXT_WINDOW,
-        maxTokens: MAX_TOKENS,
-      },
-    ];
-  }
-  return [FALLBACK_MODEL];
+export function buildModels(): ProviderModelConfig[] {
+  return [{ ...FALLBACK_MODEL, cost: { ...ZERO_COST }, input: ["text"] }];
 }

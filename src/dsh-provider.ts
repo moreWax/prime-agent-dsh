@@ -72,7 +72,7 @@ export function registerProvider(
     // (~/.dsh/.credentials.yaml). Never used by DSH.
     apiKey: "dsh-managed",
     api: PROVIDER_API,
-    models: buildModels(cfg.model),
+    models: buildModels(),
     streamSimple: (model, context, options) =>
       streamDsh(model, context, options, cfg, runtime),
   };

@@ -5,10 +5,10 @@ import { classifyTurnEnd, textBlockKey, thinkingBlockKey } from "../src/dsh-prov
 
 test("registers DSH as a selectable provider catalog", () => {
   assert.equal(PROVIDER_ID, "dsh");
-  assert.deepEqual(buildModels(undefined).map((model) => model.id), ["dsh-harness"]);
-  const [configured] = buildModels({ provider: "deepseek", model: "deepseek-v4-pro" });
-  assert.equal(configured?.id, "deepseek-v4-pro");
-  assert.match(configured?.name ?? "", /DSH/);
+  assert.deepEqual(buildModels().map((model) => model.id), ["dsh-harness"]);
+  const [configured] = buildModels();
+  assert.equal(configured?.id, "dsh-harness");
+  assert.match(configured?.name ?? "", /Harness/);
 });
 
 test("maps DSH loop outcomes without handing the tool loop to Prime", () => {

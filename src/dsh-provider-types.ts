@@ -1,4 +1,4 @@
-/** User-overridable config file (`~/.pi/agent/dsh.json`). */
+/** User-overridable config file (`~/.prime/agent/dsh.json`). */
 export interface ConfigFile {
   /** Path/command for the `dsh` CLI (default: `dsh` resolved from PATH). */
   dshBin?: string;
@@ -16,6 +16,8 @@ export interface ConfigFile {
 export interface DshModelSelection {
   provider: string;
   model: string;
+  /** Optional DSH reasoning effort coupled to this route. */
+  reasoningEffort?: string;
 }
 
 export interface ResolvedConfig {

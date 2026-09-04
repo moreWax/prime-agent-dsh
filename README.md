@@ -4,7 +4,7 @@ The plugin registers a `dsh` provider in Prime’s model picker. Selecting it ro
 
 Selecting this provider is an install-time trust decision. Its embedded DSH tree uses `danger-full-access` with approval disabled, because no safe synchronous bridge exists from DSH tool approval into Prime’s UI.
 
-The default `pool` mode keeps one persistent DSH session per Prime conversation. Sessions survive host-level Prime session disposal and are reclaimed by idle TTL and LRU limits. Configure it with `~/.pi/agent/dsh.json` or `PI_DSH_MODE`, `PI_DSH_POOL_MAX`, and `PI_DSH_POOL_IDLE_TTL_MS`. The `oneshot` mode remains a subprocess fallback. The embedded API is pinned to DeepSeek Harness `0.1.2-alpha.5`.
+The default `pool` mode keeps one persistent DSH session per Prime conversation. Sessions survive host-level Prime session disposal and are reclaimed by idle TTL and LRU limits. Configure it with `~/.prime/agent/dsh.json` (or `$PRIME_AGENT_HOME/dsh.json`) or `PI_DSH_MODE`, `PI_DSH_POOL_MAX`, and `PI_DSH_POOL_IDLE_TTL_MS`. The `oneshot` mode remains a subprocess fallback. The embedded API and its complete `@deepseek-ai/dsh-*` dependency graph are pinned to DeepSeek Harness `0.1.2-alpha.5`.
 
 # prime-agent-dsh
 
@@ -70,7 +70,7 @@ v0.0.2 replaces the narrow DSH SDK transport with ACP. Old caller-minted `prime-
 
 The equivalent CLI flags `--dsh-bin` and `--dsh-home` override those two paths.
 
-Model selection and authentication remain Prime Agent concerns. On every bridge call, the extension snapshots `ctx.model`, resolves that model through `ctx.modelRegistry.getApiKeyAndHeaders()`, and gives DSH a loopback capability URL representing that exact route. DSH never receives or persists the upstream credential. It owns context construction and sends its provider request through the Prime-owned proxy. Switching `/model` changes the route used by the next DSH call.
+Model selection and authentication remain Prime Agent concerns. On every bridge call, the extension snapshots `ctx.model`, resolves that model through `ctx.modelRegistry.getApiKeyAndHeaders()`, and gives DSH a loopback capability URL representing that exact route. DSH never receives or persists the upstream credential. It owns context construction and sends its provider request through the Prime-owned proxy. The stable `dsh/dsh-harness` picker entry delegates the route to DSH. A new pooled session snapshots DSH’s provider, model, and reasoning effort as one selection; an existing pooled session stays pinned until eviction or restart.
 
 The current release supports Prime models whose wire API is `openai-completions`, `openai-responses`, or `anthropic-messages`, matching DSH's public `llm-pi-ai` adapter. Unsupported provider-specific protocols fail explicitly rather than silently changing request semantics.
 

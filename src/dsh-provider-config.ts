@@ -9,7 +9,7 @@ const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000; // 30min, matches dsh's own turn budg
 const DEFAULT_MODE = "pool";
 const DEFAULT_POOL_MAX = 8;
 const DEFAULT_POOL_IDLE_TTL_MS = 15 * 60 * 1000; // 15min
-const CONFIG_PATH = join(homedir(), ".pi", "agent", "dsh.json");
+const CONFIG_PATH = join(process.env.PRIME_AGENT_HOME ?? join(homedir(), ".prime", "agent"), "dsh.json");
 const DSH_SETTINGS_PATH = join(process.env.DSH_HOME ?? join(homedir(), ".dsh"), "settings.yaml");
 
 export function loadConfig(): ResolvedConfig {
@@ -44,8 +44,9 @@ function readDshDefaultModel(): DshModelSelection | undefined {
     const entry = asRecord(asRecord(parsed)?.["agent-default-model"]);
     const provider = typeof entry?.provider === "string" ? entry.provider.trim() : "";
     const model = typeof entry?.model === "string" ? entry.model.trim() : "";
+    const reasoningEffort = typeof entry?.reasoningEffort === "string" ? entry.reasoningEffort.trim() : "";
     if (!provider || !model) return undefined;
-    return { provider, model };
+    return { provider, model, ...(reasoningEffort ? { reasoningEffort } : {}) };
   } catch {
     console.warn(`[pi-dsh] Failed to read ${DSH_SETTINGS_PATH}. Catalog falls back to the synthetic entry.`);
     return undefined;

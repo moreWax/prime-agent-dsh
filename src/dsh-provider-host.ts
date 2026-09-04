@@ -12,7 +12,7 @@ import { createRequire } from "node:module";
 import { boot, loadOverlayPatches } from "@deepseek-ai/dsh-app-boot";
 import { installModelSelection } from "@deepseek-ai/dsh-agent";
 import type { Agent, AgentHandle } from "@deepseek-ai/dsh-agent";
-import { createUserMessage } from "@deepseek-ai/dsh-llm";
+import { createUserMessage, ReasoningEffortId } from "@deepseek-ai/dsh-llm";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import type { Context } from "@deepseek-ai/cordis";
 import type {} from "@deepseek-ai/dsh-agent-default-model";
@@ -153,7 +153,7 @@ function deterministicSessionId(key: string): string {
 
 export interface AgentPoolOptions {
   cwd: string;
-  model?: { provider: string; model: string };
+  model?: { provider: string; model: string; reasoningEffort?: string };
   poolMax: number;
   idleTtlMs: number;
 }
@@ -173,15 +173,17 @@ export async function getOrCreateAgent(key: string, opts: AgentPoolOptions): Pro
     const selection = defaultModel.currentSelection();
     const sid = deterministicSessionId(isolatedKey);
     const target = opts.model?.provider && opts.model.model
-      ? { provider: opts.model.provider, model: opts.model.model }
-      : { provider: selection.provider, model: selection.model };
+      ? { provider: opts.model.provider, model: opts.model.model,
+          ...(opts.model.reasoningEffort ? { reasoningEffort: ReasoningEffortId(opts.model.reasoningEffort) } : {}) }
+      : { provider: selection.provider, model: selection.model,
+          ...(selection.reasoningEffort ? { reasoningEffort: selection.reasoningEffort } : {}) };
     const persisted = await persistence.list()
       .then((headers) => headers.some((header) => header.id === sid))
       .catch(() => false);
     const makeOptions = () => ({
       agentOptions: target,
       setup: (agentCtx: Context): void => {
-        installModelSelection(agentCtx, { current: selection, assembled: undefined });
+        installModelSelection(agentCtx, { current: target, assembled: undefined });
       },
     });
     const handle = persisted
