@@ -29,7 +29,8 @@
     "context-service/README.md",
     "context-service/tsconfig.json",
     "context-service/src",
-    "context-service/test"
+    "context-service/test",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "pi": {
     "extensions": [

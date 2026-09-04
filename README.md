@@ -164,3 +164,7 @@ Relevant upstream interfaces:
 ## License
 
 MIT. DeepSeek Harness and its transitive dependencies retain their own licenses and notices.
+
+## Upstream prior art
+
+The selectable pooled DSH provider is adapted from [fatwang2/pi-dsh](https://github.com/fatwang2/pi-dsh) under the MIT License. See `THIRD_PARTY_NOTICES.md`.
