@@ -1,3 +1,11 @@
+## Selectable DSH provider
+
+The plugin registers a `dsh` provider in Prime’s model picker. Selecting it routes each Prime turn into an in-process DeepSeek Harness tree. DSH owns the full agent loop, context, tools, skills, memory, subagents, and compaction. Prime only displays the streamed assistant text, reasoning, and tool activity.
+
+Selecting this provider is an install-time trust decision. Its embedded DSH tree uses `danger-full-access` with approval disabled, because no safe synchronous bridge exists from DSH tool approval into Prime’s UI.
+
+The default `pool` mode keeps one persistent DSH session per Prime conversation. Sessions survive host-level Prime session disposal and are reclaimed by idle TTL and LRU limits. Configure it with `~/.pi/agent/dsh.json` or `PI_DSH_MODE`, `PI_DSH_POOL_MAX`, and `PI_DSH_POOL_IDLE_TTL_MS`. The `oneshot` mode remains a subprocess fallback. The embedded API is pinned to DeepSeek Harness `0.1.2-alpha.5`.
+
 # prime-agent-dsh
 
 A self-contained [Prime Agent package](https://github.com/PrimeIntellect-ai/prime-agent) that adds a **DeepSeek Harness inference-context shadow** without replacing Prime behavior, plus optional explicit delegation to the real [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) runtime.

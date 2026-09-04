@@ -1,0 +1,35 @@
+/** User-overridable config file (`~/.pi/agent/dsh.json`). */
+export interface ConfigFile {
+  /** Path/command for the `dsh` CLI (default: `dsh` resolved from PATH). */
+  dshBin?: string;
+  /** Per-run timeout for a single DSH headless run, in ms (default 30min). */
+  timeoutMs?: number;
+  /** Turn driver: in-process session pool, or one-shot `dsh` subprocess. */
+  mode?: "pool" | "oneshot";
+  /** Max pooled sessions (LRU-evicted beyond this). Default 8. */
+  poolMax?: number;
+  /** Idle time before a pooled session is closed, in ms. Default 15min. */
+  poolIdleTtlMs?: number;
+}
+
+/** DSH's configured default model (`~/.dsh/settings.yaml` → agent-default-model). */
+export interface DshModelSelection {
+  provider: string;
+  model: string;
+}
+
+export interface ResolvedConfig {
+  dshBin: string;
+  timeoutMs: number;
+  mode: "pool" | "oneshot";
+  poolMax: number;
+  poolIdleTtlMs: number;
+  /**
+   * The real model DSH is configured to run, read from its settings.yaml at
+   * load time. Undefined when unreadable — the catalog then falls back to the
+   * synthetic `dsh-harness` entry and the pool follows DSH's live selection.
+   */
+  model?: DshModelSelection;
+  /** Path the config was loaded from, or undefined when defaults were used. */
+  loadedFrom?: string;
+}

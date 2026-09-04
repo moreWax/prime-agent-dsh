@@ -1,0 +1,309 @@
+// src/dsh-host.ts — the ONLY module that imports @deepseek-ai/*.
+//
+// Single chokepoint over the unstable in-process DSH surface (0.1.2-alpha.5,
+// SESSION_FORMAT_VERSION 0, "no compatibility is implied"). Any dsh upgrade
+// must re-run the plan-002 Phase 1–2 gates before bumping these pins.
+import { createHash } from "node:crypto";
+import { writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createRequire } from "node:module";
+import { boot, loadOverlayPatches } from "@deepseek-ai/dsh-app-boot";
+import { installModelSelection } from "@deepseek-ai/dsh-agent";
+import type { Agent, AgentHandle } from "@deepseek-ai/dsh-agent";
+import { createUserMessage } from "@deepseek-ai/dsh-llm";
+import { SessionId } from "@deepseek-ai/dsh-session";
+import type { Context } from "@deepseek-ai/cordis";
+import type {} from "@deepseek-ai/dsh-agent-default-model";
+import type {} from "@deepseek-ai/dsh-session-persistence";
+
+const require = createRequire(import.meta.url);
+
+const SWEEP_INTERVAL_MS = 60 * 1000;
+
+// ---------------------------------------------------------------------------
+// Shapes handed to providers.ts (kept free of @deepseek-ai types)
+// ---------------------------------------------------------------------------
+
+/** One raw session/event entry, projected to the fields the translator needs. */
+export interface SessionEventShape {
+  type: string;
+  seq: number;
+  data: unknown;
+}
+
+export interface AgentEntry {
+  key: string;
+  cwd: string;
+  /** Deterministic DSH session id (`pi-<sha256(key)>`), stable across processes. */
+  sessionId: string;
+  lastUsedAt: number;
+  idleTtlMs: number;
+  agent: Agent;
+  handle: AgentHandle;
+  /** Serializes turns per agent (DSH runs one turn at a time). */
+  turnLock: Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
+// Tree boot (lazy, module-level singleton)
+// ---------------------------------------------------------------------------
+
+let treeCtx: Context | undefined;
+let bootPromise: Promise<Context> | undefined;
+
+async function bootTree(): Promise<Context> {
+  const basePatchPath = require.resolve("@deepseek-ai/dsh-base/cordis.patch.yml");
+  const patches = loadOverlayPatches("prime-agent-dsh", basePatchPath);
+  // dsh-headless disables the HMR row because HMR requires Node
+  // `--expose-internals` (which pi's host process does NOT have). Mirror that.
+  patches.push({ id: "hmr", disabled: true });
+
+  // dsh-base defaults the embedded tree to `workspace-write` + approval `ask`
+  // (`!!js process.env.DSH_PERMISSION_MODE ?? 'workspace-write'`). The embedded
+  // tree runs full access instead — the same pattern as pi-claude-bridge's
+  // `permissionMode: "bypassPermissions"`. The trust decision is made at INSTALL
+  // time: DSH owns its tool loop, and those calls never reach Pi's approval UI
+  // (forwarding them as Pi toolcall events would hand execution to Pi's agent
+  // loop and re-drive the turn — see providers.ts).
+  //
+  // The two rows must move together. `danger-full-access` is what actually lets
+  // tools run: it permits everything at the sandbox layer, so nothing ever needs
+  // to escalate. Approval `never` does NOT mean "auto-approve" — dsh-user-approval
+  // resolves it to `rejected` — it means escalation requests die deterministically
+  // and the model is told up front not to attempt `sandbox_permissions`. Under a
+  // confined mode the pairing breaks: `ask` invites escalation, but with no
+  // answerer mounted every request fails closed as `unavailable`, so the model
+  // burns steps on retries that can never succeed. Confining the tree therefore
+  // requires bridging approval requests to Pi's permission UI first.
+  //
+  // A patch replaces the target row's WHOLE config, so both sandbox-policy keys
+  // are restated.
+  patches.push({
+    id: "sandbox-policy",
+    config: { mode: "danger-full-access", workspaceRoot: process.cwd() },
+  });
+  patches.push({ id: "approval", config: { policy: "never" } });
+
+  // Root config is an empty entry list; the base patch composes the tree.
+  const rootConfigPath = join(tmpdir(), `pi-dsh-cordis-${process.pid}.yml`);
+  writeFileSync(rootConfigPath, "[]\n");
+
+  const ctx = await boot("prime-agent-dsh", rootConfigPath, patches, undefined, import.meta.url);
+  const agents = ctx.get("agents");
+  const defaultModel = ctx.get("agentDefaultModel");
+  const persistence = ctx.get("sessionPersistence");
+  if (!agents || !defaultModel || !persistence) {
+    throw new Error("[pi-dsh] booted dsh tree is missing agents/agentDefaultModel/sessionPersistence");
+  }
+  return ctx;
+}
+
+function getTree(): Promise<Context> {
+  if (treeCtx) return Promise.resolve(treeCtx);
+  if (!bootPromise) {
+    bootPromise = bootTree().catch((error) => {
+      // Allow a retry on the next call instead of pinning the rejected promise.
+      bootPromise = undefined;
+      throw error;
+    });
+  }
+  return bootPromise.then((ctx) => {
+    treeCtx = ctx;
+    return ctx;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Pool (keyed by Pi conversation id), LRU + idle-TTL sweeper
+// ---------------------------------------------------------------------------
+
+const pool = new Map<string, AgentEntry>();
+let sweeper: ReturnType<typeof setInterval> | undefined;
+
+function ensureSweeper(): void {
+  if (sweeper) return;
+  sweeper = setInterval(() => {
+    const now = Date.now();
+    for (const entry of [...pool.values()]) {
+      if (entry.lastUsedAt + entry.idleTtlMs < now) void destroyAgent(entry);
+    }
+  }, SWEEP_INTERVAL_MS);
+  sweeper.unref?.();
+  // Best-effort cleanup so a host exit does not leave the tree dangling.
+  process.once("exit", () => {
+    for (const entry of pool.values()) {
+      try {
+        void entry.handle.dispose();
+      } catch {
+        // exit-time cleanup is best-effort
+      }
+    }
+  });
+}
+
+/** Deterministic, process-stable DSH session id derived from the Pi session key. */
+function deterministicSessionId(key: string): string {
+  return "pi-" + createHash("sha256").update(key).digest("hex").slice(0, 32);
+}
+
+export async function getOrCreateAgent(
+  key: string,
+  opts: { cwd: string; model?: { provider: string; model: string }; poolMax: number; idleTtlMs: number },
+): Promise<AgentEntry> {
+  ensureSweeper();
+  const existing = pool.get(key);
+  if (existing) {
+    existing.lastUsedAt = Date.now();
+    return existing;
+  }
+
+  const ctx = await getTree();
+  const agents = ctx.get("agents");
+  const defaultModel = ctx.get("agentDefaultModel");
+  const persistence = ctx.get("sessionPersistence");
+  if (!agents || !defaultModel || !persistence) {
+    throw new Error("[pi-dsh] dsh tree is missing agents/agentDefaultModel/sessionPersistence");
+  }
+  const selection = defaultModel.currentSelection();
+  const sid = deterministicSessionId(key);
+
+  // The model the harness runs: prefer the explicitly configured one (read
+  // from DSH's settings.yaml at load time, matching the Pi catalog entry);
+  // otherwise follow DSH's live selection exactly as the headless runner does.
+  const target =
+    opts.model?.provider && opts.model.model
+      ? { provider: opts.model.provider, model: opts.model.model }
+      : { provider: selection.provider, model: selection.model };
+
+  // Resume if this conversation is already persisted; otherwise create fresh.
+  const persisted = await persistence.list()
+    .then((headers) => headers.some((header) => header.id === sid))
+    .catch(() => false);
+
+  const makeOptions = () => ({
+    agentOptions: { provider: target.provider, model: target.model },
+    setup: (agentCtx: Context) => {
+      // Must return void: returning installModelSelection()'s result trips the
+      // loop's `?.commit` call (spike boot-correction #2). The installed
+      // selection still carries DSH's reasoning/persona wiring.
+      installModelSelection(agentCtx, { current: selection, assembled: undefined });
+    },
+  });
+
+  let handle: AgentHandle;
+  if (persisted) {
+    handle = await agents.resume({
+      resumeSessionId: SessionId(sid),
+      ...makeOptions(),
+    });
+  } else {
+    handle = await agents.create({
+      sessionId: SessionId(sid),
+      meta: { cwd: opts.cwd },
+      ...makeOptions(),
+    });
+  }
+  await handle.agent.whenIdle();
+
+  const entry: AgentEntry = {
+    key,
+    cwd: opts.cwd,
+    sessionId: sid,
+    lastUsedAt: Date.now(),
+    idleTtlMs: opts.idleTtlMs,
+    agent: handle.agent,
+    handle,
+    turnLock: Promise.resolve(),
+  };
+
+  // Room for the new agent: evict least-recently-used entries beyond the cap.
+  while (pool.size >= opts.poolMax) {
+    const lru = [...pool.values()].sort((a, b) => a.lastUsedAt - b.lastUsedAt)[0];
+    if (!lru) break;
+    await destroyAgent(lru);
+  }
+  pool.set(key, entry);
+  return entry;
+}
+
+/** Flush the session log to persistence and dispose the agent handle. */
+export async function destroyAgent(entry: AgentEntry): Promise<void> {
+  pool.delete(entry.key);
+  try {
+    const ctx = await getTree();
+    await ctx.get("sessions")?.flush(entry.agent.session);
+  } catch {
+    // flush is best-effort
+  }
+  try {
+    await entry.handle.dispose();
+  } catch {
+    // dispose is best-effort
+  }
+}
+
+/**
+ * Drive one turn: subscribe the session/event firehose, follow up with `text`,
+ * wait for quiescence, and flush the session to persistence (so a later
+ * cross-process resume sees the whole log). `onEvent` fires synchronously per
+ * session event. On `signal` abort the active turn is cancelled WITHOUT
+ * destroying the entry (droid rule: abort preserves the session). Turns on one
+ * entry are serialized.
+ */
+export async function runTurn(
+  entry: AgentEntry,
+  text: string,
+  signal: AbortSignal | undefined,
+  onEvent: (event: SessionEventShape) => void,
+): Promise<void> {
+  const { agent } = entry;
+
+  const run = entry.turnLock.then(async () => {
+    await agent.whenIdle();
+
+    let unsub: (() => void) | undefined;
+    const abortHandler = (): void => {
+      try {
+        agent.cancel({ kind: "user" });
+      } catch {
+        // cancellation is best-effort; whenIdle will still settle
+      }
+    };
+
+    try {
+      unsub = agent.ctx.on("session/event", (session, event) => {
+        if (session?.id !== agent.session.id) return;
+        onEvent({ type: event.type, seq: event.seq, data: event.data });
+      });
+      if (signal) {
+        if (signal.aborted) abortHandler();
+        else signal.addEventListener("abort", abortHandler, { once: true });
+      }
+      agent.followup(
+        createUserMessage({
+          content: [{ type: "text", text }],
+          source: { kind: "user" },
+        }),
+      );
+      await agent.whenIdle();
+    } finally {
+      unsub?.();
+      if (signal) signal.removeEventListener("abort", abortHandler);
+      // Persist this turn so cross-process resume keeps the full history.
+      try {
+        const ctx = await getTree();
+        await ctx.get("sessions")?.flush(agent.session);
+      } catch {
+        // flush is best-effort
+      }
+    }
+  });
+
+  // Serialize turns per entry and never let a failed turn poison the chain.
+  entry.turnLock = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  await run;
+}

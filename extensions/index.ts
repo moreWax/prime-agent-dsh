@@ -7,6 +7,8 @@ import { RuntimeManager } from "../src/runtime-manager.js";
 import { PrimeRouteRegistry } from "../src/model-route.js";
 import { registerShadowContextTelemetry } from "./shadow-context.js";
 import { DurableCompactionController, loadCompactionPlannerConfig } from "../src/compaction.js";
+import { CONFIG_PATH_FOR_DIAGNOSTICS, loadConfig as loadProviderConfig } from "../src/dsh-provider-config.js";
+import { bindSessionRuntime, createInstanceRuntime, registerProvider } from "../src/dsh-provider.js";
 
 interface DshDetails {
   sessionId: string;
@@ -61,8 +63,29 @@ function sessionFor(ctx: ExtensionContext, explicit?: string): string | undefine
   return undefined;
 }
 
-export default function deepSeekHarnessExtension(pi: ExtensionAPI) {
+export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
   registerShadowContextTelemetry(pi);
+
+  // The selectable `dsh` provider is a real in-process harness. DSH owns its
+  // agent loop, context, tools, compaction, skills, subagents, and memories;
+  // Prime only supplies the latest user turn and renders DSH's event stream.
+  const providerConfig = loadProviderConfig();
+  const providerRuntime = createInstanceRuntime();
+  registerProvider(pi, providerConfig, providerRuntime);
+  pi.on("session_start", async (_event, ctx) => {
+    await Promise.resolve();
+    providerRuntime.cwd = ctx.cwd;
+    const sessionId = ctx.sessionManager.getSessionId?.() ?? ctx.cwd;
+    providerRuntime.sessionKey = sessionId;
+    bindSessionRuntime(sessionId, providerRuntime);
+    if (ctx.hasUI) {
+      const configHint = providerConfig.loadedFrom ? "" : `; defaults (no ${CONFIG_PATH_FOR_DIAGNOSTICS})`;
+      ctx.ui.notify(
+        `DSH provider ready (mode=${providerConfig.mode}, poolMax=${providerConfig.poolMax}${configHint}).`,
+        "info",
+      );
+    }
+  });
   let manager = new RuntimeManager();
   pi.registerFlag("dsh-bin", { type: "string", description: "Path to a compatible dsh executable" });
   pi.registerFlag("dsh-home", { type: "string", description: "Isolated DSH_HOME used by the bridge" });
