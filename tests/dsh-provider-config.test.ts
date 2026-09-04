@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { coerceConfigFile } from "../src/dsh-provider-config.js";
+import { coerceConfigFile, coercePrimeMcpServers, mergeMcpServers } from "../src/dsh-provider-config.js";
 
 test("accepts operator MCP declarations and persistent terminal opt-in", () => {
   const config = coerceConfigFile({ persistentTerminal: true, mcpServers: [
@@ -21,4 +21,33 @@ test("rejects unsafe, malformed, and duplicate MCP declarations", () => {
     { transport: "stdio", serverName: "same", command: "/bin/two" },
   ] }, "test");
   assert.deepEqual(config.mcpServers, [{ transport: "stdio", serverName: "same", command: "/bin/one" }]);
+});
+
+test("inherits enabled Prime settings.json MCP servers in DSH operator format", () => {
+  const servers = coercePrimeMcpServers({
+    "zvec-grep": { type: "stdio", command: "/home/xor/.npm-global/bin/zg", args: ["server", "--stdio"], enabled: true, startupTimeoutMs: 60000 },
+    "vllm-orch": { type: "http", url: "http://localhost:8091/mcp", headers: { "X-Token": "secret" }, enabled: true },
+    disabled: { type: "http", url: "http://localhost:9/mcp", enabled: false },
+    relative: { type: "stdio", command: "zg" },
+    "weird-type": { type: "sse", url: "http://localhost/mcp" },
+    "bad entry": "not-an-object",
+  }, "prime-settings");
+  assert.deepEqual(servers, [
+    { transport: "stdio", serverName: "zvec-grep", command: "/home/xor/.npm-global/bin/zg", args: ["server", "--stdio"] },
+    { transport: "streamable-http", serverName: "vllm-orch", url: "http://localhost:8091/mcp", headers: { "X-Token": "secret" } },
+  ]);
+});
+
+test("explicit dsh.json MCP entries win over inherited Prime entries per serverName", () => {
+  const merged = mergeMcpServers(
+    [{ transport: "streamable-http", serverName: "zvec-grep", url: "http://127.0.0.1:7999/mcp" }],
+    [
+      { transport: "stdio", serverName: "zvec-grep", command: "/bin/zg" },
+      { transport: "stdio", serverName: "arxiv", command: "/bin/python" },
+    ],
+  );
+  assert.deepEqual(merged, [
+    { transport: "streamable-http", serverName: "zvec-grep", url: "http://127.0.0.1:7999/mcp" },
+    { transport: "stdio", serverName: "arxiv", command: "/bin/python" },
+  ]);
 });

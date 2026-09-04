@@ -12,7 +12,9 @@ The default `pool` mode keeps one persistent DSH session per Prime conversation.
 
 ### Optional MCP and persistent terminal
 
-Operators can add pooled-agent capabilities in `~/.prime/agent/dsh.json`:
+Pooled agents automatically inherit every **enabled** MCP server declared in Prime's own `~/.prime/agent/settings.json` (`type: "stdio"` becomes `transport: "stdio"`; `type: "http"` becomes `transport: "streamable-http"`), so packages configured for the Prime kernel keep working when a session executes in the embedded DSH loop. Both files are operator-owned, so inheritance does not widen the trust boundary, and inherited entries pass the same strict validation as explicit ones.
+
+Operators can add DSH-only servers or override an inherited entry by `serverName` in `~/.prime/agent/dsh.json`:
 
 ```json
 {

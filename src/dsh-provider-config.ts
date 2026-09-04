@@ -9,7 +9,9 @@ const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000; // 30min, matches dsh's own turn budg
 const DEFAULT_MODE = "pool";
 const DEFAULT_POOL_MAX = 8;
 const DEFAULT_POOL_IDLE_TTL_MS = 15 * 60 * 1000; // 15min
-const CONFIG_PATH = join(process.env.PRIME_AGENT_HOME ?? join(homedir(), ".prime", "agent"), "dsh.json");
+const PRIME_AGENT_HOME = process.env.PRIME_AGENT_HOME ?? join(homedir(), ".prime", "agent");
+const CONFIG_PATH = join(PRIME_AGENT_HOME, "dsh.json");
+const PRIME_SETTINGS_PATH = join(PRIME_AGENT_HOME, "settings.json");
 const DSH_SETTINGS_PATH = join(process.env.DSH_HOME ?? join(homedir(), ".dsh"), "settings.yaml");
 
 export function loadConfig(): ResolvedConfig {
@@ -30,7 +32,7 @@ export function loadConfig(): ResolvedConfig {
     poolIdleTtlMs: envPoolIdle ?? fromFile.parsed.poolIdleTtlMs ?? DEFAULT_POOL_IDLE_TTL_MS,
     fullAccess: envFullAccess ?? fromFile.parsed.fullAccess ?? false,
     transparent: envTransparent ?? fromFile.parsed.transparent ?? true,
-    mcpServers: fromFile.parsed.mcpServers ?? [],
+    mcpServers: mergeMcpServers(fromFile.parsed.mcpServers ?? [], readPrimeMcpServers()),
     persistentTerminal: fromFile.parsed.persistentTerminal ?? false,
     model: readDshDefaultModel(),
     loadedFrom: fromFile.exists ? CONFIG_PATH : undefined,
@@ -136,6 +138,60 @@ export function coerceConfigFile(value: unknown, path: string): ConfigFile {
     });
   }
   return out;
+}
+
+/**
+ * Prime's own `settings.json` declares MCP servers as a name-keyed record with
+ * `type` instead of `transport` and an `enabled` flag. Convert enabled entries
+ * to this package's operator format so packages configured for the Prime kernel
+ * keep working when their session executes in the embedded DSH loop. Entries
+ * are validated by the same strict rules as explicit `dsh.json` declarations;
+ * both files are operator-owned, so this does not widen the trust boundary.
+ */
+export function coercePrimeMcpServers(value: unknown, path: string): McpServerConfig[] {
+  const record = asRecord(value);
+  if (!record) return [];
+  const out: McpServerConfig[] = [];
+  const names = new Set<string>();
+  for (const [serverName, entry] of Object.entries(record)) {
+    if (!isPlainObject(entry)) continue;
+    if (entry.enabled === false) continue;
+    const toolCallTimeoutMs = entry.toolCallTimeoutMs;
+    let candidate: unknown;
+    if (entry.type === "stdio") {
+      candidate = { transport: "stdio", serverName, command: entry.command, args: entry.args, env: entry.env, cwd: entry.cwd, toolCallTimeoutMs };
+    } else if (entry.type === "http" || entry.type === "streamable-http") {
+      candidate = { transport: "streamable-http", serverName, url: entry.url, headers: entry.headers, toolCallTimeoutMs };
+    } else {
+      console.warn(`[pi-dsh] ${path} mcpServers.${serverName} has an unsupported type. Ignoring entry.`);
+      continue;
+    }
+    const parsed = coerceMcpServer(candidate);
+    if (!parsed || names.has(parsed.serverName)) {
+      console.warn(`[pi-dsh] ${path} mcpServers.${serverName} is invalid or duplicates a serverName. Ignoring entry.`);
+      continue;
+    }
+    names.add(parsed.serverName);
+    out.push(parsed);
+  }
+  return out;
+}
+
+function readPrimeMcpServers(): McpServerConfig[] {
+  if (!existsSync(PRIME_SETTINGS_PATH)) return [];
+  try {
+    const parsed = JSON.parse(readFileSync(PRIME_SETTINGS_PATH, "utf8")) as unknown;
+    return coercePrimeMcpServers(asRecord(parsed)?.mcpServers, PRIME_SETTINGS_PATH);
+  } catch (error) {
+    console.warn(`[pi-dsh] Failed to read ${PRIME_SETTINGS_PATH}: ${(error as Error).message}. No MCP servers inherited.`);
+    return [];
+  }
+}
+
+/** Explicit `dsh.json` entries win per serverName; Prime-inherited servers fill the rest. */
+export function mergeMcpServers(explicit: readonly McpServerConfig[], inherited: readonly McpServerConfig[]): McpServerConfig[] {
+  const names = new Set(explicit.map((server) => server.serverName));
+  return [...explicit, ...inherited.filter((server) => !names.has(server.serverName))];
 }
 
 function coerceMcpServer(value: unknown): McpServerConfig | undefined {

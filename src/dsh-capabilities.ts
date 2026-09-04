@@ -60,7 +60,7 @@ export function dshCapabilityRegistry(config?: DshOptionalCapabilityConfig): rea
     if (capability.id === "mcp" && (config?.mcpServers?.length ?? 0) > 0) return {
       ...capability,
       status: "loaded",
-      summary: "Operator-declared MCP clients are mounted in the pooled Agent scope; runtime server behavior is not probed by this report.",
+      summary: "Operator-declared or Prime settings.json-inherited MCP clients are mounted in the pooled Agent scope; runtime server behavior is not probed by this report.",
       evidence: [path("src/dsh-provider-host.ts", "validated operator-only servers mount with failOnStartupError"), limit("src/dsh-provider-config.ts", "no model-facing server manager; configuration changes isolate pool identity")],
     };
     if (capability.id === "terminals" && config?.persistentTerminal === true) return {
