@@ -28,7 +28,7 @@ test("rejects unsafe, malformed, and duplicate MCP declarations", () => {
 
 test("inherits enabled Prime settings.json MCP servers in DSH operator format", () => {
   const servers = coercePrimeMcpServers({
-    "zvec-grep": { type: "stdio", command: "/home/xor/.npm-global/bin/zg", args: ["server", "--stdio"], enabled: true, startupTimeoutMs: 60000 },
+    "demo-search": { type: "stdio", command: "/usr/local/bin/demo-tool", args: ["serve", "--stdio"], enabled: true, startupTimeoutMs: 60000 },
     "vllm-orch": { type: "http", url: "http://localhost:8091/mcp", headers: { "X-Token": "secret" }, enabled: true },
     disabled: { type: "http", url: "http://localhost:9/mcp", enabled: false },
     relative: { type: "stdio", command: "zg" },
@@ -36,21 +36,21 @@ test("inherits enabled Prime settings.json MCP servers in DSH operator format", 
     "bad entry": "not-an-object",
   }, "prime-settings");
   assert.deepEqual(servers, [
-    { transport: "stdio", serverName: "zvec-grep", command: "/home/xor/.npm-global/bin/zg", args: ["server", "--stdio"], optional: true },
+    { transport: "stdio", serverName: "demo-search", command: "/usr/local/bin/demo-tool", args: ["serve", "--stdio"], optional: true },
     { transport: "streamable-http", serverName: "vllm-orch", url: "http://localhost:8091/mcp", headers: { "X-Token": "secret" }, optional: true },
   ]);
 });
 
 test("explicit dsh.json MCP entries win over inherited Prime entries per serverName", () => {
   const merged = mergeMcpServers(
-    [{ transport: "streamable-http", serverName: "zvec-grep", url: "http://127.0.0.1:7999/mcp" }],
+    [{ transport: "streamable-http", serverName: "demo-search", url: "http://127.0.0.1:7999/mcp" }],
     [
-      { transport: "stdio", serverName: "zvec-grep", command: "/bin/zg" },
+      { transport: "stdio", serverName: "demo-search", command: "/bin/demo-tool" },
       { transport: "stdio", serverName: "arxiv", command: "/bin/python" },
     ],
   );
   assert.deepEqual(merged, [
-    { transport: "streamable-http", serverName: "zvec-grep", url: "http://127.0.0.1:7999/mcp" },
+    { transport: "streamable-http", serverName: "demo-search", url: "http://127.0.0.1:7999/mcp" },
     { transport: "stdio", serverName: "arxiv", command: "/bin/python" },
   ]);
 });
