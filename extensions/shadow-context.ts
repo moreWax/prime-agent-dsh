@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ShadowContextTelemetry, type ShadowLocation, type ShadowTraceEntry } from "../src/shadow-telemetry.js";
 import { ContextService } from "../src/dsh-context-service.js";
@@ -21,12 +22,12 @@ export function registerShadowContextTelemetry(pi: ExtensionAPI): ShadowContextT
   const telemetry = new ShadowContextTelemetry();
   const dsh = new ContextService();
   dsh.handle({ version: PROTOCOL, id: 1, method: "initialize" });
-  let dshSyncs = 0, dshSkips = 0, dshErrors = 0, requestId = 1;
+  let dshSyncs = 0, dshSkips = 0, dshErrors = 0, dshAppends = 0, dshNoops = 0, dshRebuilds = 0, requestId = 1;
   const revisions = new Map<string, number>();
   pi.on("context", (event, ctx) => {
     telemetry.observe("context", event.messages, location(ctx));
     try {
-      const messages = event.messages.map((message) => primeToDsh(message as any));
+      const messages = event.messages.map((message, index) => primeToDsh(message as any, {}, `prime-${createHash("sha256").update(`${index}:`).update(stableJson(message)).digest("hex").slice(0, 32)}`));
       const here = location(ctx); const sessionId = here.sessionId;
       const response = dsh.handle({ version: PROTOCOL, id: ++requestId, method: "session/sync-canonical",
         params: { sessionId, messages, expectedRevision: revisions.get(sessionId) ?? 0 } }) as any;
@@ -35,6 +36,7 @@ export function registerShadowContextTelemetry(pi: ExtensionAPI): ShadowContextT
       const roundTrip = projection.ok ? projection.result.messages.map((message: any) => dshToPrime(message)) : undefined;
       if (!roundTrip || stableJson(roundTrip) !== stableJson(event.messages)) { dshSkips++; return; }
       revisions.set(sessionId, response.result.revision); dshSyncs++;
+      if (response.result.mode === "append") dshAppends++; else if (response.result.mode === "noop") dshNoops++; else dshRebuilds++;
     } catch { dshErrors++; }
   });
   pi.on("before_provider_request", (event, ctx) => { telemetry.observe("before_provider_request", event.payload, location(ctx)); });
@@ -45,7 +47,7 @@ export function registerShadowContextTelemetry(pi: ExtensionAPI): ShadowContextT
       const here = location(ctx); const status = telemetry.status(here.sessionId, here.branchId) ?? telemetry.status(here.sessionId);
       if (!status) { ctx.ui.notify(`DSH context shadow: no observations for session ${here.sessionId}`, "info"); return; }
       ctx.ui.notify(`DSH context shadow session=${status.sessionId} branch=${status.branchId} observations=${status.observations} errors=${status.errors}\ncontext ${metric(status.context)}\nprovider ${metric(status.provider)}
-DSH mirror syncs=${dshSyncs} skips=${dshSkips} errors=${dshErrors}`, status.errors || dshErrors ? "warning" : "info");
+DSH mirror syncs=${dshSyncs} append=${dshAppends} noop=${dshNoops} rebuild=${dshRebuilds} skips=${dshSkips} errors=${dshErrors}`, status.errors || dshErrors ? "warning" : "info");
     },
   });
   pi.registerCommand("dsh-context-trace", {

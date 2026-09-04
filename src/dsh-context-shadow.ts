@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { Api, Context, Model } from "@earendil-works/pi-ai";
 import { ContextService } from "./dsh-context-service.js";
 import { PROTOCOL } from "./context-protocol.js";
@@ -14,7 +15,7 @@ export class DshContextShadow {
   /** Mirror supported context through a real DSH Session, but return Prime's exact object for parity. */
   async prepare(context: Context, model: Model<Api>, sessionKey = "provider-call"): Promise<Context> {
     try {
-      const canonical = context.messages.map((message) => primeToDsh(message as any));
+      const canonical = context.messages.map((message, index) => primeToDsh(message as any, {}, `prime-${createHash("sha256").update(`${index}:`).update(stableJson(message)).digest("hex").slice(0, 32)}`));
       const response: any = this.call("session/sync-canonical", { sessionId: sessionKey, messages: canonical,
         expectedRevision: this.revisions.get(sessionKey) ?? 0 });
       if (!response.ok) { this.stats.errors++; return context; }

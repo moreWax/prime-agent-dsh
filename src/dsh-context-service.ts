@@ -3,7 +3,7 @@ import { Session, SessionId } from "@deepseek-ai/dsh-session";
 import { createAssistantMessage, createUserMessage, freezeMessage, type Message } from "@deepseek-ai/dsh-llm";
 import { PROTOCOL, type Request, type Success, type Failure, type SimpleMessage } from "./context-protocol.js";
 
-type State = { session: Session; revision: number };
+type State = { session: Session; revision: number; canonical?: readonly Message[] };
 type SyncParams = { sessionId: string; messages: SimpleMessage[]; expectedRevision?: number };
 type ProjectParams = { sessionId: string; from?: number; limit?: number };
 const own = (v: unknown, k: string): boolean => typeof v === "object" && v !== null && Object.hasOwn(v, k);
@@ -70,10 +70,33 @@ export class ContextService {
   private syncCanonical(p: { sessionId: string; messages: Message[]; expectedRevision?: number }): unknown {
     const prior = this.sessions.get(p.sessionId);
     if (p.expectedRevision !== undefined && p.expectedRevision !== (prior?.revision ?? 0)) throw fault("REVISION_CONFLICT", "expectedRevision does not match", { actualRevision: prior?.revision ?? 0 });
-    const session = Session.create(SessionId(p.sessionId));
-    let step = 0;
-    for (const raw of p.messages) {
-      const message = freezeMessage(raw);
+    const incoming = p.messages.map((message) => freezeMessage(message));
+    const previous = prior?.canonical;
+    let common = 0;
+    if (previous) while (common < previous.length && common < incoming.length
+      && JSON.stringify(previous[common]) === JSON.stringify(incoming[common])) common++;
+    if (prior && previous && common === previous.length && common === incoming.length) {
+      return { sessionId: p.sessionId, revision: prior.revision, eventCount: prior.session.seq,
+        messageCount: previous.length, mode: "noop", commonPrefixMessages: common };
+    }
+    let session: Session;
+    let mode: "append" | "rebuild";
+    if (prior && previous && common === previous.length) {
+      session = prior.session; mode = "append";
+      this.appendCanonical(session, incoming.slice(common), common);
+    } else {
+      session = Session.create(SessionId(p.sessionId)); mode = "rebuild";
+      this.appendCanonical(session, incoming, 0);
+    }
+    const revision = (prior?.revision ?? 0) + 1;
+    this.sessions.set(p.sessionId, { session, revision, canonical: incoming });
+    return { sessionId: p.sessionId, revision, eventCount: session.seq, messageCount: session.deriveMessages().length,
+      mode, commonPrefixMessages: common };
+  }
+
+  private appendCanonical(session: Session, messages: readonly Message[], offset: number): void {
+    for (const [index, message] of messages.entries()) {
+      const step = offset + index;
       if (message.role === "assistant") {
         session.append("assistant/message", { turn: step, step, message: message as any }, { surfaceOp: "append" });
         for (const block of message.content) if (block.type === "tool-call") {
@@ -81,14 +104,8 @@ export class ContextService {
         }
       } else if (message.source.kind === "tool") {
         session.append("tool/result", { turn: step, step, message: message as any }, { surfaceOp: "append" });
-      } else {
-        session.append("user/message", message as any, { surfaceOp: "append" });
-      }
-      step++;
+      } else session.append("user/message", message as any, { surfaceOp: "append" });
     }
-    const revision = (prior?.revision ?? 0) + 1;
-    this.sessions.set(p.sessionId, { session, revision });
-    return { sessionId: p.sessionId, revision, eventCount: session.seq, messageCount: session.deriveMessages().length };
   }
 
   private project(p: ProjectParams): unknown {

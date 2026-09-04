@@ -48,7 +48,7 @@ function split(input: PrimeMessage | PrimeEnvelope): { message: PrimeMessage; en
   return { message: input as PrimeMessage };
 }
 /** Lossless Prime -> DSH projection. Prime-only fields ride source.prime for the reverse projection. */
-export function primeToDsh(input: PrimeMessage | PrimeEnvelope, caps: ConverterCapabilities = {}): Message {
+export function primeToDsh(input: PrimeMessage | PrimeEnvelope, caps: ConverterCapabilities = {}, idOverride?: string): Message {
   const { message: p, envelope } = split(input); const role = string(p.role, "role");
   const fields: Record<string, unknown> = {}; for (const [k, v] of Object.entries(p)) if (k !== "role" && k !== "content") fields[k] = v;
   const meta: PrimeMeta = { role, ...(envelope ? { envelope } : {}), fields };
@@ -63,7 +63,7 @@ export function primeToDsh(input: PrimeMessage | PrimeEnvelope, caps: ConverterC
 ${String(p.output ?? "")}` : String(p.summary ?? "");
     content = role === "custom" ? toDshBlocks(p.content, caps, false) : [{ type: "text", text }]; dshRole = "user"; source = { kind: "plugin", plugin: `prime:${role}`, form: role.includes("Summary") ? "recall" : "notice", ...(role.includes("Summary") ? {} : { summary: role }), prime: meta };
   } else throw new TypeError(`unsupported Prime role: ${role}`);
-  const id = typeof envelope?.id === "string" ? envelope.id : typeof p.id === "string" ? p.id : crypto.randomUUID();
+  const id = idOverride ?? (typeof envelope?.id === "string" ? envelope.id : typeof p.id === "string" ? p.id : crypto.randomUUID());
   return freezeMessage({ id: MessageId(id), role: dshRole, content, source } as Message);
 }
 function fromDshBlocks(content: readonly ContentBlock[], caps: ConverterCapabilities): Record<string, unknown>[] {
