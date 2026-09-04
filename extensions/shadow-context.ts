@@ -4,8 +4,9 @@ import type { Message } from "@deepseek-ai/dsh-llm";
 import { ShadowContextTelemetry, type ShadowLocation, type ShadowTraceEntry } from "../src/shadow-telemetry.js";
 import { ContextService } from "../src/dsh-context-service.js";
 import { ContextProtocolClient, type BranchKey } from "../src/context-protocol.js";
-import { primeToDsh, dshToPrime, type PrimeEnvelope, type PrimeMessage } from "../src/context-converter.js";
+import { primeToDshAsync, dshToPrimeAsync, type PrimeEnvelope, type PrimeMessage } from "../src/context-converter.js";
 import { stableJson } from "../src/prefix-metrics.js";
+import { LocalDshImageAttachments, type DshImageAttachmentGateway } from "../src/dsh-image-attachments.js";
 
 interface MirrorCounters {
   syncs: number;
@@ -49,22 +50,22 @@ export class ShadowMirrorController {
   private readonly revisions = new Map<string, number>();
   readonly counters: MirrorCounters = { syncs: 0, skips: 0, errors: 0, appends: 0, noops: 0, rebuilds: 0 };
 
-  constructor(service = new ContextService()) {
+  constructor(service = new ContextService(), private readonly attachments: DshImageAttachmentGateway = new LocalDshImageAttachments()) {
     this.service = service;
     this.client = new ContextProtocolClient(request => this.service.handle(request));
     const initialized = this.client.call("initialize");
     if (!initialized.ok) throw new Error(`Could not initialize context shadow: ${initialized.error.message}`);
   }
 
-  observe(messages: readonly unknown[], key: BranchKey): void {
+  async observe(messages: readonly unknown[], key: BranchKey): Promise<void> {
     const encodedKey = JSON.stringify([key.sessionId, key.branchId]);
     try {
-      const canonical = messages.map((message, index) => primeToDsh(asPrimeInput(message), {}, this.messageId(message, index)));
+      const canonical = await Promise.all(messages.map((message, index) => primeToDshAsync(asPrimeInput(message), { admitImages: (images) => this.attachments.admitPrimeImages(images) }, this.messageId(message, index))));
       const synced = this.client.call("session/sync-canonical", { key, messages: canonical, expectedRevision: this.revisions.get(encodedKey) ?? 0 });
       if (!synced.ok || !isSyncResult(synced.result)) { this.counters.errors++; return; }
       const projected = this.client.call("project", { key });
       if (!projected.ok || !isProjectResult(projected.result)) { this.counters.errors++; return; }
-      const roundTrip = projected.result.messages.map((message) => dshToPrime(message));
+      const roundTrip = await Promise.all(projected.result.messages.map((message) => dshToPrimeAsync(message, { resolveImage: (attachment) => this.attachments.resolveDshImage(attachment) })));
       if (stableJson(roundTrip) !== stableJson(messages)) { this.counters.skips++; return; }
       this.revisions.set(encodedKey, synced.result.revision);
       this.counters.syncs++;
@@ -93,7 +94,7 @@ export class ShadowContextExtension {
     this.pi.on("context", (event, ctx) => {
       const here = location(ctx);
       this.telemetry.observe("context", event.messages, here);
-      this.mirror.observe(event.messages, here);
+      void this.mirror.observe(event.messages, here);
     });
     this.pi.on("before_provider_request", (event, ctx) => {
       this.telemetry.observe("before_provider_request", event.payload, location(ctx));

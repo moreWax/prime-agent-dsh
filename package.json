@@ -49,7 +49,10 @@
     "@agentclientprotocol/sdk": "1.4.0",
     "@deepseek-ai/dsh": "0.1.2-alpha.5",
     "@deepseek-ai/dsh-llm": "0.1.2-alpha.5",
-    "@deepseek-ai/dsh-session": "0.1.2-alpha.5"
+    "@deepseek-ai/dsh-session": "0.1.2-alpha.5",
+    "@deepseek-ai/cordis": "4.0.2",
+    "@deepseek-ai/dsh-attachment": "0.1.2-alpha.5",
+    "@deepseek-ai/dsh-attachment-local": "0.1.2-alpha.5"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
@@ -65,7 +68,8 @@
     "tsx": "^4.20.0",
     "typebox": "1.3.25",
     "typescript": "^5.9.0",
-    "typescript-eslint": "^8.69.0"
+    "typescript-eslint": "^8.69.0",
+    "@eslint/js": "^10.0.1"
   },
   "engines": {
     "node": ">=22.19.0"
