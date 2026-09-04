@@ -225,7 +225,8 @@ try {
     stream: () => { throw new Error("native stream must not run while transparent wrapping is enabled"); },
     streamSimple: () => { throw new Error("native stream must not run while transparent wrapping is enabled"); },
   };
-  let transparentProvider;
+  let transparentRegistration;
+  let transparentSessionStart;
   const transparentSessionId = `transparent-${Date.now()}`;
   const transparentCtx = {
     cwd: workspace, thinkingLevel: "off", hasUI: false,
@@ -236,17 +237,20 @@ try {
     },
   };
   const transparent = new TransparentProviderController({
-    on() {}, registerCommand() {}, registerProvider(provider) { transparentProvider = provider; },
+    on(event, handler) { if (event === "session_start") transparentSessionStart = handler; },
+    registerCommand() {}, unregisterProvider() {},
+    registerProvider(name, config) { transparentRegistration = { name, config }; },
   }, { dshBin: "unused", timeoutMs: 30_000, mode: "pool", poolMax: 2,
-    poolIdleTtlMs: 60_000, fullAccess: false, transparent: true, mcpServers: [], persistentTerminal: false }, { dshHome: () => home });
+    poolIdleTtlMs: 60_000, fullAccess: false, transparent: true, mcpServers: [], persistentTerminal: false }, { dshHome: () => home, getNativeStream: () => nativeProvider.streamSimple });
   transparent.register();
-  transparent.captureAndPublish(transparentCtx);
+  await transparentSessionStart({}, transparentCtx);
   check("transparent wrapper preserves normal provider and model ids", () => {
-    assert.equal(transparentProvider.id, "mock-local");
-    assert.equal(transparentProvider.getModels()[0].id, "mock-1");
-    assert.equal(transparentProvider.auth, nativeProvider.auth);
+    assert.match(transparentRegistration.name, /^dsh-transparent-/);
+    assert.equal(transparentRegistration.config.api, nativeModel.api);
+    assert.equal(transparentCtx.modelRegistry.getAll()[0].provider, "mock-local");
+    assert.equal(transparentCtx.modelRegistry.getAll()[0].id, "mock-1");
   });
-  const transparentStream = transparentProvider.stream(nativeModel, {
+  const transparentStream = transparentRegistration.config.streamSimple(nativeModel, {
     messages: [{ role: "user", content: "Reply transparent-ok.", timestamp: Date.now() }], tools: [],
   }, { sessionId: transparentCtx.sessionManager.getSessionId() });
   const transparentEvents = [];
@@ -258,7 +262,7 @@ try {
   });
 
   async function transparentTurn(content) {
-    const stream = transparentProvider.stream(nativeModel, {
+    const stream = transparentRegistration.config.streamSimple(nativeModel, {
       messages: [{ role: "user", content, timestamp: Date.now() }], tools: [],
     }, { sessionId: transparentCtx.sessionManager.getSessionId() });
     const events = [];
