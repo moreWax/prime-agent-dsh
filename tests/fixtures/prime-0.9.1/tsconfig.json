@@ -1,0 +1,11 @@
+{
+  "extends": "../../../tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": "../../../",
+    "paths": {
+      "@earendil-works/pi-coding-agent": ["/home/xor/.npm-global/lib/node_modules/prime-agent/dist/index.d.ts"],
+      "@earendil-works/pi-ai": ["/home/xor/.npm-global/lib/node_modules/prime-agent/node_modules/@earendil-works/pi-ai/dist/index.d.ts"]
+    }
+  },
+  "include": ["compatibility.ts"]
+}

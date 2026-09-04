@@ -43,9 +43,11 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test tests/*.test.ts",
-    "check": "npm run typecheck && npm run lint && npm test",
+    "check": "npm run typecheck && npm run typecheck:prime-0.9.1 && npm run lint && npm run test:prime-0.9.1 && npm test",
     "lint": "eslint \"src/**/*.ts\" \"extensions/**/*.ts\" \"tests/**/*.ts\"",
-    "test:live": "node --import tsx tests/live-provider.mjs"
+    "test:live": "node --import tsx tests/live-provider.mjs",
+    "typecheck:prime-0.9.1": "tsc --noEmit -p tests/fixtures/prime-0.9.1/tsconfig.json",
+    "test:prime-0.9.1": "node --test tests/fixtures/prime-0.9.1/runtime.test.mjs"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.4.0",
