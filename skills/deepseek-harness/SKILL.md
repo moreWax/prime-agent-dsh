@@ -1,6 +1,5 @@
 ---
 name: deepseek-harness
-summary: Delegate a task to the real DeepSeek Harness runtime through the prime-agent-dsh bridge.
 description: Use when the user explicitly asks to use DeepSeek Harness, DSH, a DSH profile, or DSH-owned context/memory/plugins. Do not use merely because the selected model is made by DeepSeek.
 ---
 
