@@ -40,7 +40,7 @@ test("registry avoids known overclaims", () => {
 
 test("human report includes status totals, each capability, and probe caveat", () => {
   const output = formatDshCapabilities();
-  assert.match(output, /verified=7, loaded=2, degraded=1, unavailable=2/);
+  assert.match(output, /verified=9, loaded=0, degraded=1, unavailable=2/);
   for (const item of DSH_CAPABILITIES) assert.match(output, new RegExp(`^${item.label}: ${item.status}`, "m"));
   assert.match(output, /does not probe credentials or external services/);
 });
