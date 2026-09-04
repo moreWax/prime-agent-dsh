@@ -144,6 +144,8 @@ function streamDshPool(
         fullAccess: cfg.fullAccess,
         approvalAnswerer: runtime.approvalAnswerer,
         userQuestionAnswerer: runtime.userQuestionAnswerer,
+        mcpServers: cfg.mcpServers,
+        persistentTerminal: cfg.persistentTerminal,
       });
       entryRef = entry;
       const translator = new TurnTranslator(output, stream);

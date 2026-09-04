@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { load as loadYaml } from "js-yaml";
-import type { ConfigFile, DshModelSelection, ResolvedConfig } from "./dsh-provider-types.js";
+import type { ConfigFile, DshModelSelection, McpServerConfig, ResolvedConfig } from "./dsh-provider-types.js";
 
 const DEFAULT_DSH_BIN = "dsh";
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000; // 30min, matches dsh's own turn budget
@@ -30,6 +30,8 @@ export function loadConfig(): ResolvedConfig {
     poolIdleTtlMs: envPoolIdle ?? fromFile.parsed.poolIdleTtlMs ?? DEFAULT_POOL_IDLE_TTL_MS,
     fullAccess: envFullAccess ?? fromFile.parsed.fullAccess ?? false,
     transparent: envTransparent ?? fromFile.parsed.transparent ?? true,
+    mcpServers: fromFile.parsed.mcpServers ?? [],
+    persistentTerminal: fromFile.parsed.persistentTerminal ?? false,
     model: readDshDefaultModel(),
     loadedFrom: fromFile.exists ? CONFIG_PATH : undefined,
   };
@@ -101,7 +103,7 @@ function readConfigFile(path: string): { exists: boolean; parsed: ConfigFile } {
   }
 }
 
-function coerceConfigFile(value: unknown, path: string): ConfigFile {
+export function coerceConfigFile(value: unknown, path: string): ConfigFile {
   if (!isPlainObject(value)) {
     console.warn(`[pi-dsh] ${path} is not a JSON object. Ignoring contents.`);
     return {};
@@ -120,7 +122,40 @@ function coerceConfigFile(value: unknown, path: string): ConfigFile {
   if (typeof value.poolIdleTtlMs === "number" && Number.isFinite(value.poolIdleTtlMs) && value.poolIdleTtlMs > 0) {
     out.poolIdleTtlMs = value.poolIdleTtlMs;
   }
+  if (typeof value.persistentTerminal === "boolean") out.persistentTerminal = value.persistentTerminal;
+  if (Array.isArray(value.mcpServers)) {
+    const names = new Set<string>();
+    out.mcpServers = value.mcpServers.flatMap((entry, index) => {
+      const parsed = coerceMcpServer(entry);
+      if (!parsed || names.has(parsed.serverName)) {
+        console.warn(`[pi-dsh] ${path}.mcpServers[${index}] is invalid or duplicates a serverName. Ignoring entry.`);
+        return [];
+      }
+      names.add(parsed.serverName);
+      return [parsed];
+    });
+  }
   return out;
+}
+
+function coerceMcpServer(value: unknown): McpServerConfig | undefined {
+  if (!isPlainObject(value) || typeof value.serverName !== "string" || !/^[A-Za-z0-9_-]{1,32}$/.test(value.serverName)) return undefined;
+  const toolCallTimeoutMs = typeof value.toolCallTimeoutMs === "number" && Number.isSafeInteger(value.toolCallTimeoutMs) && value.toolCallTimeoutMs > 0 ? value.toolCallTimeoutMs : undefined;
+  if (value.transport === "stdio" && typeof value.command === "string" && isAbsolute(value.command)) {
+    if (value.args !== undefined && (!Array.isArray(value.args) || !value.args.every((item) => typeof item === "string"))) return undefined;
+    if (value.env !== undefined && (!isPlainObject(value.env) || !Object.values(value.env).every((item) => typeof item === "string"))) return undefined;
+    if (value.cwd !== undefined && (typeof value.cwd !== "string" || !isAbsolute(value.cwd))) return undefined;
+    return { transport: "stdio", serverName: value.serverName, command: value.command,
+      ...(value.args ? { args: value.args } : {}), ...(value.env ? { env: value.env as Record<string, string> } : {}),
+      ...(value.cwd ? { cwd: value.cwd } : {}), ...(toolCallTimeoutMs ? { toolCallTimeoutMs } : {}) };
+  }
+  if (value.transport === "streamable-http" && typeof value.url === "string") {
+    try { const url = new URL(value.url); if (url.protocol !== "http:" && url.protocol !== "https:") return undefined; } catch { return undefined; }
+    if (value.headers !== undefined && (!isPlainObject(value.headers) || !Object.values(value.headers).every((item) => typeof item === "string"))) return undefined;
+    return { transport: "streamable-http", serverName: value.serverName, url: value.url,
+      ...(value.headers ? { headers: value.headers as Record<string, string> } : {}), ...(toolCallTimeoutMs ? { toolCallTimeoutMs } : {}) };
+  }
+  return undefined;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

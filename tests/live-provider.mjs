@@ -76,7 +76,7 @@ try {
   let registration;
   registerProvider({ registerProvider(name, config) { registration = { name, config }; } }, {
     dshBin: "unused", timeoutMs: 30_000, mode: "pool", poolMax: 2,
-    poolIdleTtlMs: 60_000, fullAccess: false, transparent: true,
+    poolIdleTtlMs: 60_000, fullAccess: false, transparent: true, mcpServers: [], persistentTerminal: false,
   }, runtime);
 
   check("actual dsh provider registers", () => assert.equal(registration?.name, "dsh"));
@@ -186,7 +186,7 @@ try {
   const transparent = new TransparentProviderController({
     on() {}, registerCommand() {}, registerProvider(provider) { transparentProvider = provider; },
   }, { dshBin: "unused", timeoutMs: 30_000, mode: "pool", poolMax: 2,
-    poolIdleTtlMs: 60_000, fullAccess: false, transparent: true }, { dshHome: () => home });
+    poolIdleTtlMs: 60_000, fullAccess: false, transparent: true, mcpServers: [], persistentTerminal: false }, { dshHome: () => home });
   transparent.register();
   transparent.captureAndPublish(transparentCtx);
   check("transparent wrapper preserves normal provider and model ids", () => {

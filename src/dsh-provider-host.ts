@@ -18,9 +18,12 @@ import type {} from "@deepseek-ai/dsh-session-persistence";
 import type { ApprovalOutcome, ApprovalRequest } from "@deepseek-ai/dsh-user-approval";
 import type { AskUserQuestionAnswer, AskUserQuestionRequest } from "@deepseek-ai/dsh-user-questions";
 import { apply as mountAskUserTool } from "@deepseek-ai/dsh-tool-ask-user";
+import * as McpClient from "@deepseek-ai/dsh-mcp-client";
+import * as PersistentBash from "@deepseek-ai/dsh-tool-bash-persistent";
 import { createPrivateRootConfig } from "./dsh-provider-security.js";
 import { BusyLruPool, type PoolEntry } from "./dsh-agent-pool.js";
 import type { PreparedPrimeRoute } from "./model-route.js";
+import type { McpServerConfig } from "./dsh-provider-types.js";
 import { admitPrimeTurnContent, type PrimeTurnContent } from "./dsh-image-attachments.js";
 
 const require = createRequire(import.meta.url);
@@ -91,6 +94,12 @@ async function bootTree(workspaceRoot: string, fullAccess: boolean, route: Prepa
     config: { mode: fullAccess ? "danger-full-access" : "workspace-write", workspaceRoot },
   });
   patches.push({ id: "approval", config: { policy: fullAccess ? "never" : "ask" } });
+  // Alpha.5 persistent-terminal services are inert until its model-facing tool
+  // is explicitly installed in an Agent scope by operator configuration.
+  patches.push({ insert: [
+    { id: "prime-dsh-terminal", name: "@deepseek-ai/dsh-terminal" },
+    { id: "prime-dsh-terminal-bash", name: "@deepseek-ai/dsh-terminal-bash", disabled: process.platform === "win32", config: { timeoutMs: 300000 } },
+  ] });
 
   // llm-pi-ai resolves apiKeyEnv at request time. The value is an unprivileged,
   // loopback-only capability and is never included in a patch or session log.
@@ -190,6 +199,8 @@ export interface AgentPoolOptions {
   fullAccess: boolean;
   approvalAnswerer?: ApprovalAnswerer;
   userQuestionAnswerer?: UserQuestionAnswerer;
+  mcpServers: McpServerConfig[];
+  persistentTerminal: boolean;
 }
 
 export function agentPoolKey(cwd: string, sessionKey: string, fullAccess: boolean, routeFingerprint: string): string {
@@ -199,7 +210,10 @@ export function agentPoolKey(cwd: string, sessionKey: string, fullAccess: boolea
 export async function getOrCreateAgent(key: string, opts: AgentPoolOptions): Promise<AgentEntry> {
   ensureSweeper();
   const cwd = await canonicalCwd(opts.cwd);
-  const isolatedKey = agentPoolKey(cwd, key, opts.fullAccess, opts.route.fingerprint);
+  const capabilityFingerprint = createHash("sha256").update(JSON.stringify({
+    mcpServers: opts.mcpServers, persistentTerminal: opts.persistentTerminal,
+  })).digest("hex");
+  const isolatedKey = `${agentPoolKey(cwd, key, opts.fullAccess, opts.route.fingerprint)}\0${capabilityFingerprint}`;
   const entry = await pool.acquire(isolatedKey, opts.poolMax, async () => {
     const ctx = await getTree(cwd, opts.fullAccess, opts.route);
     const agents = ctx.get("agents");
@@ -216,8 +230,22 @@ export async function getOrCreateAgent(key: string, opts: AgentPoolOptions): Pro
       .catch(() => false);
     const makeOptions = () => ({
       agentOptions: target,
-      setup: (agentCtx: Context): void => {
+      setup: async (agentCtx: Context): Promise<void> => {
         installModelSelection(agentCtx, { current: target, assembled: undefined });
+        // Only trusted operator config reaches this composition point. There is
+        // deliberately no model-facing MCP server-management capability.
+        for (const server of opts.mcpServers) {
+          const config = server.transport === "stdio"
+            ? McpClient.Config({ transport: "stdio", serverName: server.serverName, command: server.command,
+                args: server.args ?? [], env: server.env ?? {}, cwd: server.cwd ?? cwd,
+                toolCallTimeoutMs: server.toolCallTimeoutMs ?? 60000, failOnStartupError: true })
+            : McpClient.Config({ transport: "streamable-http", serverName: server.serverName, url: server.url,
+                headers: server.headers ?? {}, toolCallTimeoutMs: server.toolCallTimeoutMs ?? 60000, failOnStartupError: true });
+          await agentCtx.plugin(McpClient, config);
+        }
+        if (opts.persistentTerminal && process.platform !== "win32") {
+          agentCtx.plugin(PersistentBash, PersistentBash.Config({ timeoutMs: 300000 }));
+        }
       },
     });
     const handle = persisted

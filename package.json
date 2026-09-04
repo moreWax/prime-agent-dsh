@@ -64,7 +64,11 @@
     "@deepseek-ai/dsh-session-persistence": "0.1.2-alpha.5",
     "@deepseek-ai/dsh-user-approval": "0.1.2-alpha.5",
     "@deepseek-ai/dsh-tool-ask-user": "0.1.2-alpha.5",
-    "@deepseek-ai/dsh-user-questions": "0.1.2-alpha.5"
+    "@deepseek-ai/dsh-user-questions": "0.1.2-alpha.5",
+    "@deepseek-ai/dsh-mcp-client": "0.1.2-alpha.5",
+    "@deepseek-ai/dsh-terminal": "0.1.2-alpha.5",
+    "@deepseek-ai/dsh-terminal-bash": "0.1.2-alpha.5",
+    "@deepseek-ai/dsh-tool-bash-persistent": "0.1.2-alpha.5"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",

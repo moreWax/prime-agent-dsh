@@ -12,7 +12,7 @@ test("transparent wrapper preserves provider identity, catalog, auth and support
   let registered: Provider<Api> | undefined;
   const pi = { on() {}, registerProvider(provider: Provider<Api>) { registered = provider; }, registerCommand() {} };
   const ctx = { cwd: "/tmp", modelRegistry: { getAll: () => [model], getProvider: () => native }, sessionManager: { getSessionId: () => "s" } };
-  const cfg = { dshBin: "dsh", timeoutMs: 1, mode: "pool" as const, poolMax: 1, poolIdleTtlMs: 1, fullAccess: false, transparent: false };
+  const cfg = { dshBin: "dsh", timeoutMs: 1, mode: "pool" as const, poolMax: 1, poolIdleTtlMs: 1, fullAccess: false, transparent: false, mcpServers: [], persistentTerminal: false };
   const controller = new TransparentProviderController(pi as never, cfg, { dshHome: () => "/tmp" });
   controller.register(); controller.captureAndPublish(ctx as never);
   assert.equal(registered?.id, "native");

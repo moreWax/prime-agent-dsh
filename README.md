@@ -10,6 +10,24 @@ The Loader boot config is created exclusively as mode `0600` inside an unpredict
 
 The default `pool` mode keeps one persistent DSH session per Prime conversation. Sessions survive host-level Prime session disposal and are reclaimed by idle TTL and LRU limits. Configure it with `~/.prime/agent/dsh.json` (or `$PRIME_AGENT_HOME/dsh.json`) or `PI_DSH_MODE`, `PI_DSH_POOL_MAX`, and `PI_DSH_POOL_IDLE_TTL_MS`. The `oneshot` mode remains a subprocess fallback. The embedded API and its complete `@deepseek-ai/dsh-*` dependency graph are pinned to DeepSeek Harness `0.1.2-alpha.5`.
 
+### Optional MCP and persistent terminal
+
+Operators can add pooled-agent capabilities in `~/.prime/agent/dsh.json`:
+
+```json
+{
+  "persistentTerminal": false,
+  "mcpServers": [
+    { "transport": "stdio", "serverName": "local", "command": "/absolute/path/to/server", "args": [] },
+    { "transport": "streamable-http", "serverName": "remote", "url": "https://example.test/mcp", "headers": { "Authorization": "Bearer operator-secret" } }
+  ]
+}
+```
+
+Both features default off. Stdio commands and optional working directories must be absolute. HTTP endpoints must use `http` or `https`. Server names must match `[A-Za-z0-9_-]{1,32}` and be unique. Invalid entries are ignored with a warning. Initial MCP connection failure aborts unpublished Agent creation. Servers and the persistent shell are Agent-scoped and are disposed with the pooled Agent. There is no model-facing server-management tool, so only the operator-owned config can select commands, URLs, environment values, or headers. Treat those fields and this file as secrets.
+
+Alpha.5 already mounts `web_search` and SSRF-guarded anonymous `web_fetch` in the base bundle. Search resolves `DEEPSEEK_API_KEY` per request through DSH credentials (`$DSH_HOME/.credentials.yaml`, inherited environment, then project/user `.env` fallback) and uses DeepSeek's separate Messages/search endpoint. This package does not copy Prime provider credentials into DSH or accept web credentials in `dsh.json`.
+
 # prime-agent-dsh
 
 A self-contained [Prime Agent package](https://github.com/PrimeIntellect-ai/prime-agent) that adds a **DeepSeek Harness inference-context shadow** without replacing Prime behavior, plus optional explicit delegation to the real [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) runtime.

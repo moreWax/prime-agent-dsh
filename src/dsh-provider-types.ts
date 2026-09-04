@@ -1,3 +1,25 @@
+export interface McpStdioServerConfig {
+  transport: "stdio";
+  serverName: string;
+  /** Absolute executable path; no shell interpolation. */
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+  cwd?: string;
+  toolCallTimeoutMs?: number;
+}
+
+export interface McpHttpServerConfig {
+  transport: "streamable-http";
+  serverName: string;
+  /** Absolute HTTP(S) endpoint. */
+  url: string;
+  headers?: Record<string, string>;
+  toolCallTimeoutMs?: number;
+}
+
+export type McpServerConfig = McpStdioServerConfig | McpHttpServerConfig;
+
 /** User-overridable config file (`~/.prime/agent/dsh.json`). */
 export interface ConfigFile {
   /** Path/command for the `dsh` CLI (default: `dsh` resolved from PATH). */
@@ -14,6 +36,10 @@ export interface ConfigFile {
   fullAccess?: boolean;
   /** Wrap normal Prime providers with DSH. Defaults to true. */
   transparent?: boolean;
+  /** Operator-declared servers mounted in each pooled Agent scope. */
+  mcpServers?: McpServerConfig[];
+  /** Enable an owner-scoped persistent shell tool. Default false. */
+  persistentTerminal?: boolean;
 }
 
 /** DSH's configured default model (`~/.dsh/settings.yaml` → agent-default-model). */
@@ -34,6 +60,8 @@ export interface ResolvedConfig {
   fullAccess: boolean;
   /** Route ordinary Prime provider turns through DSH. */
   transparent: boolean;
+  mcpServers: McpServerConfig[];
+  persistentTerminal: boolean;
   /**
    * The real model DSH is configured to run, read from its settings.yaml at
    * load time. Undefined when unreadable — the catalog then falls back to the
