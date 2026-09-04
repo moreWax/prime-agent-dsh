@@ -39,6 +39,15 @@ const server = http.createServer(async (req, res) => {
       { choices: [{ delta: {}, finish_reason: "tool_calls" }] },
     ];
   };
+  const callTool = (name, args, id) => {
+    stats.toolRequests++;
+    stats.calledToolNames.push(name);
+    return [
+      { choices: [{ delta: { role: "assistant", tool_calls: [{ index: 0, id, type: "function", function: { name, arguments: "" } }] } }] },
+      { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: JSON.stringify(args) } }] } }] },
+      { choices: [{ delta: {}, finish_reason: "tool_calls" }] },
+    ];
+  };
   if (String(latest).includes("SUBAGENT_PROBE") && !flattened.includes("embedded-child-ok")) {
     chunks = toolCall("call_subagent_probe", "subagent", { description: "embedded child probe", prompt: "CHILD_PROBE: reply exactly embedded-child-ok", run_in_background: false });
   } else if (String(latest).includes("WORKFLOW_PROBE") && !flattened.includes("workflow-child-ok")) {
@@ -51,16 +60,7 @@ const server = http.createServer(async (req, res) => {
   } else if (String(latest).includes("JOBS_PROBE") && flattened.includes("started background subagent job") && !flattened.includes('"name":"job_output"')) {
     const match = flattened.match(/started background subagent job ([a-z]+-\d+)/);
     chunks = toolCall("call_jobs_output_probe", "job_output", { job_id: match?.[1] ?? "subagent-1", wait: true, timeout_ms: 5000 });
-  const callTool = (name, args, id) => {
-    stats.toolRequests++;
-    stats.calledToolNames.push(name);
-    return [
-      { choices: [{ delta: { role: "assistant", tool_calls: [{ index: 0, id, type: "function", function: { name, arguments: "" } }] } }] },
-      { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: JSON.stringify(args) } }] } }] },
-      { choices: [{ delta: {}, finish_reason: "tool_calls" }] },
-    ];
-  };
-  else if (String(latest).includes("COMPACTION_PRUNE") && !flattened.includes("call_compact_bash")) {
+  } else if (String(latest).includes("COMPACTION_PRUNE") && !flattened.includes("call_compact_bash")) {
     chunks = callTool("bash", { command: "node -e \"process.stdout.write('COMPACT_HEAD'+('MIDDLE_SECRET_'.repeat(24000))+'COMPACT_TAIL')\"", description: "Produce deterministic oversized tool output" }, "call_compact_bash");
     chunks.at(-1).usage = { prompt_tokens: 60000, completion_tokens: 2, total_tokens: 60002 };
   } else if (String(latest).includes("GOAL_PROBE") && !flattened.includes("call_goal_create")) {

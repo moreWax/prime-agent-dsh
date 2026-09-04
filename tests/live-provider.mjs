@@ -158,6 +158,7 @@ try {
   check("embedded tree exposes the three probed model tool surfaces", () => {
     for (const name of ["subagent", "workflow", "job_output", "job_list", "job_kill"])
       assert.ok(behavioralStats.toolsSeen.includes(name), `missing ${name}`);
+  });
   const beforeBehavior = await stats();
   const skill = await turn("SKILL_PROBE load integration-probe.");
   check("embedded DSH advertises and executes its skill tool", () => {
