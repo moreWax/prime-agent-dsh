@@ -21,7 +21,7 @@ export class ModelWrapperController {
       handler: async (_args, ctx) => {
         await Promise.resolve();
         const stats = this.shadow.stats;
-        ctx.ui.notify(`DSH wrapper shadow: syncs=${stats.syncs}, skips=${stats.skips}, errors=${stats.errors}, messages=${stats.lastMessageCount ?? 0}`, "info");
+        ctx.ui.notify(`DSH wrapper projection: mode=${this.shadow.mode}, syncs=${stats.syncs}, promotions=${stats.promotions}, skips=${stats.skips}, errors=${stats.errors}, messages=${stats.lastMessageCount ?? 0}, outcome=${stats.lastOutcome?.reason ?? "none"}`, "info");
       },
     });
     this.pi.registerCommand("dsh-context", {

@@ -58,12 +58,26 @@ v0.0.2 replaces the narrow DSH SDK transport with ACP. Old caller-minted `prime-
 | `PRIME_DSH_PATCHES` | empty | Comma/semicolon-separated Cordis patch paths |
 | `PRIME_DSH_BIN` | package-pinned DSH CLI | Optional explicit compatible `dsh` executable |
 | `PRIME_DSH_INITIALIZE_TIMEOUT_MS` | `15000` | Initialize handshake timeout |
+| `PRIME_DSH_PROJECTION_MODE` | `shadow` | Projection promotion gate: `shadow`, `canary`, or `active` |
 
 The equivalent CLI flags `--dsh-bin` and `--dsh-home` override those two paths.
 
 Model selection and authentication remain Prime Agent concerns. On every bridge call, the extension snapshots `ctx.model`, resolves that model through `ctx.modelRegistry.getApiKeyAndHeaders()`, and gives DSH a loopback capability URL representing that exact route. DSH never receives or persists the upstream credential. It owns context construction and sends its provider request through the Prime-owned proxy. Switching `/model` changes the route used by the next DSH call.
 
 The current release supports Prime models whose wire API is `openai-completions`, `openai-responses`, or `anthropic-messages`, matching DSH's public `llm-pi-ai` adapter. Unsupported provider-specific protocols fail explicitly rather than silently changing request semantics.
+
+### Projection promotion gate (developer preview)
+
+The model-wrapper proof of concept has a strict promotion gate. It converts the
+complete Prime message list to DSH, projects it back, rebuilds the full provider
+context, and selects that candidate only when it has exact deep structural parity
+with the original context. Any sync, projection, validation, conversion, or parity
+failure returns the original `Context` object unchanged.
+
+`PRIME_DSH_PROJECTION_MODE` defaults to `shadow`. `canary` additionally requires
+an explicit per-branch canary selector supplied by the embedding controller; with
+no selector it stays fail-open on native Prime context. `active` authorizes selection
+only after the same parity gate. None of these modes changes model auth or dispatch.
 
 ## DSH → Prime installation
 
