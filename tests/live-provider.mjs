@@ -38,6 +38,19 @@ function check(label, fn) {
   catch (error) { failures++; console.error(`FAIL ${label} — ${error.message}`); }
 }
 async function stats() { return fetch(baseUrl.replace(/\/v1$/, "/stats")).then((response) => response.json()); }
+async function coldTurn(sessionKey, provider, prompt) {
+  const child = spawn(process.execPath, ["--import", "tsx", join(here, "tests/fixtures/live-provider-client.mjs"),
+    home, workspace, baseUrl, sessionKey, provider, prompt], { env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+  let stdout = "", stderr = "";
+  child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  const code = await new Promise((resolve, reject) => { child.once("error", reject); child.once("exit", resolve); });
+  if (code !== 0) throw new Error(`cold provider child exited ${code}: ${stderr}`);
+  const line = stdout.trim().split("\n").at(-1);
+  if (!line) throw new Error("cold provider child returned no result");
+  return JSON.parse(line);
+}
 
 let route;
 try {
@@ -92,6 +105,34 @@ try {
   });
   const recall = await turn("RECALL_TOKEN");
   check("pool preserves same-session continuity", () => assert.equal(recall.text, "ZEBRA_XYZZY"));
+
+  const cacheFirst = await turn("PREFIX_CACHE first");
+  const cacheSecond = await turn("PREFIX_CACHE second");
+  const cacheStats = await stats();
+  const [firstEnvelope, secondEnvelope] = cacheStats.observations.slice(-2);
+  check("repeated-prefix requests expose the actual provider envelope prefix", () => {
+    assert.ok(firstEnvelope.messageCount > 0);
+    assert.ok(secondEnvelope.commonPrefixMessages > 0);
+    assert.ok(secondEnvelope.messageCount > firstEnvelope.messageCount);
+  });
+  check("cache metrics are provider-reported, not inferred from prefix similarity", () => {
+    assert.equal(cacheFirst.result.usage.cacheRead, 8);
+    assert.equal(cacheSecond.result.usage.cacheRead, 8);
+  });
+
+  const coldSession = `cold-${Date.now()}`;
+  const coldSeed = await coldTurn(coldSession, "mock-cold-a", "Remember COLD_ZEBRA. Reply ok.");
+  const coldRecall = await coldTurn(coldSession, "mock-cold-a", "RECALL_TOKEN");
+  check("persisted DSH projection resumes after a real process cold restart", () => {
+    assert.equal(coldSeed.stopReason, "stop");
+    assert.equal(coldRecall.text, "COLD_ZEBRA");
+    assert.equal(coldRecall.stopReason, "stop");
+  });
+  const switchedRoute = await coldTurn(coldSession, "mock-cold-b", "RECALL_TOKEN");
+  check("changing the native model route isolates the persisted session", () => {
+    assert.notEqual(coldSeed.routeFingerprint, switchedRoute.routeFingerprint);
+    assert.notEqual(switchedRoute.text, "COLD_ZEBRA");
+  });
   const image = await turn([
     { type: "text", text: "IMAGE_TEST before" },
     { type: "image", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", mimeType: "image/png" },
