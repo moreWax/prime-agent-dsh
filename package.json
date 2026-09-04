@@ -44,7 +44,8 @@
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test tests/*.test.ts",
     "check": "npm run typecheck && npm run lint && npm test",
-    "lint": "eslint \"src/**/*.ts\" \"extensions/**/*.ts\" \"tests/**/*.ts\""
+    "lint": "eslint \"src/**/*.ts\" \"extensions/**/*.ts\" \"tests/**/*.ts\"",
+    "test:live": "node --import tsx tests/live-provider.mjs"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.4.0",
