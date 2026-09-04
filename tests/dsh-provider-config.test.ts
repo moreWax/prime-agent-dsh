@@ -36,8 +36,8 @@ test("inherits enabled Prime settings.json MCP servers in DSH operator format", 
     "bad entry": "not-an-object",
   }, "prime-settings");
   assert.deepEqual(servers, [
-    { transport: "stdio", serverName: "zvec-grep", command: "/home/xor/.npm-global/bin/zg", args: ["server", "--stdio"] },
-    { transport: "streamable-http", serverName: "vllm-orch", url: "http://localhost:8091/mcp", headers: { "X-Token": "secret" } },
+    { transport: "stdio", serverName: "zvec-grep", command: "/home/xor/.npm-global/bin/zg", args: ["server", "--stdio"], optional: true },
+    { transport: "streamable-http", serverName: "vllm-orch", url: "http://localhost:8091/mcp", headers: { "X-Token": "secret" }, optional: true },
   ]);
 });
 

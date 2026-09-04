@@ -270,9 +270,9 @@ export async function getOrCreateAgent(key: string, opts: AgentPoolOptions): Pro
           const config = server.transport === "stdio"
             ? McpClient.Config({ transport: "stdio", serverName: server.serverName, command: server.command,
                 args: server.args ?? [], env: server.env ?? {}, cwd: server.cwd ?? cwd,
-                toolCallTimeoutMs: server.toolCallTimeoutMs ?? 60000, failOnStartupError: true })
+                toolCallTimeoutMs: server.toolCallTimeoutMs ?? 60000, failOnStartupError: server.optional !== true })
             : McpClient.Config({ transport: "streamable-http", serverName: server.serverName, url: server.url,
-                headers: server.headers ?? {}, toolCallTimeoutMs: server.toolCallTimeoutMs ?? 60000, failOnStartupError: true });
+                headers: server.headers ?? {}, toolCallTimeoutMs: server.toolCallTimeoutMs ?? 60000, failOnStartupError: server.optional !== true });
           await agentCtx.plugin(McpClient, config);
         }
         if (opts.persistentTerminal && process.platform !== "win32") {

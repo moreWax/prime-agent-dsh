@@ -172,7 +172,10 @@ export function coercePrimeMcpServers(value: unknown, path: string): McpServerCo
       continue;
     }
     names.add(parsed.serverName);
-    out.push(parsed);
+    // Prime's settings legitimately lists servers that come and go (fleet
+    // services, sidecars). Inherited servers mount best-effort so a stopped
+    // Prime-side server can never block session startup.
+    out.push({ ...parsed, optional: true });
   }
   return out;
 }

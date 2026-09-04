@@ -7,6 +7,8 @@ export interface McpStdioServerConfig {
   env?: Record<string, string>;
   cwd?: string;
   toolCallTimeoutMs?: number;
+  /** Best-effort mount: session still starts when the server is unreachable. */
+  optional?: boolean;
 }
 
 export interface McpHttpServerConfig {
@@ -16,6 +18,8 @@ export interface McpHttpServerConfig {
   url: string;
   headers?: Record<string, string>;
   toolCallTimeoutMs?: number;
+  /** Best-effort mount: session still starts when the server is unreachable. */
+  optional?: boolean;
 }
 
 export type McpServerConfig = McpStdioServerConfig | McpHttpServerConfig;
