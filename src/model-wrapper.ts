@@ -81,7 +81,7 @@ export function createModelWrapper(
   sourceModels: readonly Model<Api>[],
   resolveAuth: SourceAuthResolver,
   loadStream: OriginalStreamLoader | undefined = loadOriginalStreamSimple,
-  prepareContext: ContextPreparer = async (context) => context,
+  prepareContext: ContextPreparer = (context) => Promise.resolve(context),
 ): ModelWrapper {
   const sources = new Map<string, Model<Api>>();
   const models: WrapperModelDefinition[] = [];

@@ -109,6 +109,7 @@ export class ShadowContextExtension {
     this.pi.registerCommand("dsh-context-status", {
       description: "Show passive Prime context/provider prefix telemetry",
       handler: async (_args, ctx) => {
+        await Promise.resolve();
         const here = location(ctx);
         const status = this.telemetry.status(here.sessionId, here.branchId) ?? this.telemetry.status(here.sessionId);
         if (!status) { ctx.ui.notify(`DSH context shadow: no observations for session ${here.sessionId}`, "info"); return; }
@@ -125,6 +126,7 @@ DSH mirror syncs=${c.syncs} append=${c.appends} noop=${c.noops} rebuild=${c.rebu
     this.pi.registerCommand("dsh-context-trace", {
       description: "Show or clear passive context fingerprint trace (/dsh-context-trace [count|clear])",
       handler: async (args, ctx) => {
+        await Promise.resolve();
         const here = location(ctx);
         const arg = args.trim().toLowerCase();
         if (arg === "clear") { this.telemetry.clear(here.sessionId); ctx.ui.notify("DSH context shadow trace cleared for this session", "info"); return; }

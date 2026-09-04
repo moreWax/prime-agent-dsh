@@ -51,7 +51,8 @@ export class PrimeInferenceProxy {
   get baseUrl(): string { if (!this.port) throw new Error("proxy not started"); return `http://127.0.0.1:${this.port}`; }
   async start(): Promise<void> {
     if (this.server) return;
-    this.server = createServer(async (request, response) => {
+    this.server = createServer((request, response) => {
+      void (async () => {
       try {
         const supplied = request.headers.authorization?.replace(/^Bearer\s+/i, "") ?? request.headers["x-api-key"];
         const value = Array.isArray(supplied) ? supplied[0] : supplied;
@@ -71,8 +72,8 @@ export class PrimeInferenceProxy {
           if (this.route.model.api === "anthropic-messages") headers.set("x-api-key", this.route.auth.apiKey);
           else headers.set("authorization", `Bearer ${this.route.auth.apiKey}`);
         }
-        const body: Buffer[] = [];
-        for await (const chunk of request) body.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        const body: Uint8Array[] = [];
+        for await (const chunk of request) body.push(Uint8Array.from(chunk as Iterable<number>));
         const upstreamResponse = await fetch(upstream, { method: request.method, headers,
           body: request.method === "GET" || request.method === "HEAD" ? undefined : Buffer.concat(body), redirect: "manual" });
         const outHeaders: Record<string, string> = {};
@@ -82,6 +83,7 @@ export class PrimeInferenceProxy {
         for await (const chunk of upstreamResponse.body) response.write(chunk);
         response.end();
       } catch (error) { response.writeHead(502, { "content-type": "application/json" }); response.end(JSON.stringify({ error: { message: error instanceof Error ? error.message : "upstream failure" } })); }
+      })();
     });
     await new Promise<void>((resolve, reject) => { this.server!.once("error", reject); this.server!.listen(0, "127.0.0.1", () => resolve()); });
     const address = this.server.address(); if (!address || typeof address === "string") throw new Error("failed to bind inference proxy"); this.port = address.port;

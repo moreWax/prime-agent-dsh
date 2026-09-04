@@ -11,13 +11,15 @@ export class ModelWrapperController {
   constructor(private readonly pi: ExtensionAPI, private readonly shadow = new DshContextShadow()) {}
 
   register(): void {
-    this.pi.on("session_start", async (_event, ctx) => { this.publish(ctx); });
+    this.pi.on("session_start", async (_event, ctx) => { await Promise.resolve(); this.publish(ctx); });
     this.pi.on("model_select", async (event, ctx) => {
-      if (event.model.provider !== DSH_CONTEXT_PROVIDER && !this.sourceModels.includes(event.model)) this.publish(ctx);
+      await Promise.resolve();
+      if (event.model.provider !== DSH_CONTEXT_PROVIDER && !this.sourceModels.some((model) => model.provider === event.model.provider && model.id === event.model.id)) this.publish(ctx);
     });
     this.pi.registerCommand("dsh-context-wrapper-status", {
       description: "Show DSH model-wrapper shadow projection status",
       handler: async (_args, ctx) => {
+        await Promise.resolve();
         const stats = this.shadow.stats;
         ctx.ui.notify(`DSH wrapper shadow: syncs=${stats.syncs}, skips=${stats.skips}, errors=${stats.errors}, messages=${stats.lastMessageCount ?? 0}`, "info");
       },
@@ -46,7 +48,7 @@ export class ModelWrapperController {
       api: "openai-completions",
       baseUrl: "http://127.0.0.1.invalid",
       models: this.wrapper.models,
-      streamSimple: this.wrapper.streamSimple,
+      streamSimple: (...args) => this.wrapper!.streamSimple(...args),
     });
   }
 
@@ -54,16 +56,16 @@ export class ModelWrapperController {
     const current = ctx.model;
     if (!current) throw new Error("No model is selected");
     this.publish(ctx);
-    const target = current.provider === DSH_CONTEXT_PROVIDER ? this.wrapper?.sourceFor(current.id) : this.wrappedFor(current, ctx);
+    const target = current.provider === DSH_CONTEXT_PROVIDER ? this.wrapper?.sourceFor(current.id) : this.wrappedFor(current.provider, current.id, ctx);
     if (!target) throw new Error(`Could not map selected model ${current.provider}/${current.id}`);
     if (!await this.pi.setModel(target)) throw new Error(`Model ${target.provider}/${target.id} is unavailable`);
     ctx.ui.notify(`Selected ${target.name}`, "info");
   }
 
-  private wrappedFor(current: Model<Api>, ctx: ExtensionContext): Model<Api> | undefined {
+  private wrappedFor(provider: string, modelId: string, ctx: ExtensionContext): Model<Api> | undefined {
     const definition = this.wrapper?.models.find((candidate) => {
       const source = this.wrapper?.sourceFor(candidate.id);
-      return source?.provider === current.provider && source.id === current.id;
+      return source?.provider === provider && source.id === modelId;
     });
     return definition ? ctx.modelRegistry.find(DSH_CONTEXT_PROVIDER, definition.id) : undefined;
   }

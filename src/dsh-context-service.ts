@@ -1,12 +1,11 @@
-import { randomUUID } from "node:crypto";
 import { Session, SessionId } from "@deepseek-ai/dsh-session";
-import { createAssistantMessage, createUserMessage, freezeMessage, type Message } from "@deepseek-ai/dsh-llm";
+import { createAssistantMessage, createUserMessage, freezeMessage, type AssistantMessage, type Message, type ToolResultMessage, type UserMessage } from "@deepseek-ai/dsh-llm";
 import { PROTOCOL, type Request, type Success, type Failure, type SimpleMessage } from "./context-protocol.js";
 
 type State = { session: Session; revision: number; canonical?: readonly Message[] };
 type SyncParams = { sessionId: string; messages: SimpleMessage[]; expectedRevision?: number };
 type ProjectParams = { sessionId: string; from?: number; limit?: number };
-const own = (v: unknown, k: string): boolean => typeof v === "object" && v !== null && Object.hasOwn(v, k);
+const record = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 export class ContextService {
   private initialized = false;
@@ -98,13 +97,13 @@ export class ContextService {
     for (const [index, message] of messages.entries()) {
       const step = offset + index;
       if (message.role === "assistant") {
-        session.append("assistant/message", { turn: step, step, message: message as any }, { surfaceOp: "append" });
+        session.append("assistant/message", { turn: step, step, message: message as AssistantMessage }, { surfaceOp: "append" });
         for (const block of message.content) if (block.type === "tool-call") {
           session.append("tool/call", { turn: step, step, callId: block.id, name: block.name, arguments: block.arguments });
         }
       } else if (message.source.kind === "tool") {
-        session.append("tool/result", { turn: step, step, message: message as any }, { surfaceOp: "append" });
-      } else session.append("user/message", message as any, { surfaceOp: "append" });
+        session.append("tool/result", { turn: step, step, message: message as ToolResultMessage }, { surfaceOp: "append" });
+      } else session.append("user/message", message as UserMessage, { surfaceOp: "append" });
     }
   }
 
@@ -118,16 +117,16 @@ export class ContextService {
 class ProtocolFault extends Error { constructor(readonly code: string, message: string, readonly data?: unknown) { super(message); } }
 function fault(code: string, message: string, data?: unknown): ProtocolFault { return new ProtocolFault(code, message, data); }
 function assertSync(v: unknown): SyncParams {
-  if (!v || typeof v !== "object" || typeof (v as any).sessionId !== "string" || !Array.isArray((v as any).messages)) throw fault("INVALID_PARAMS", "session/sync requires sessionId and messages[]");
+  if (!record(v) || typeof v.sessionId !== "string" || !Array.isArray(v.messages)) throw fault("INVALID_PARAMS", "session/sync requires sessionId and messages[]");
   const p = v as SyncParams; if (!p.sessionId) throw fault("INVALID_PARAMS", "sessionId must not be empty");
   if (p.expectedRevision !== undefined && (!Number.isSafeInteger(p.expectedRevision) || p.expectedRevision < 0)) throw fault("INVALID_PARAMS", "expectedRevision must be a non-negative integer");
   p.messages.forEach((m, i) => { if (!m || (m.role !== "user" && m.role !== "assistant") || typeof m.content !== "string") throw fault("INVALID_PARAMS", `invalid message at index ${i}`); }); return p;
 }
 function assertProject(v: unknown): ProjectParams {
-  if (!v || typeof v !== "object" || typeof (v as any).sessionId !== "string") throw fault("INVALID_PARAMS", "project requires sessionId"); return v as ProjectParams;
+  if (!record(v) || typeof v.sessionId !== "string") throw fault("INVALID_PARAMS", "project requires sessionId"); return v as ProjectParams;
 }
 
 function assertCanonicalSync(v: unknown): { sessionId: string; messages: Message[]; expectedRevision?: number } {
-  if (!v || typeof v !== "object" || typeof (v as any).sessionId !== "string" || !Array.isArray((v as any).messages)) throw fault("INVALID_PARAMS", "session/sync-canonical requires sessionId and messages[]");
+  if (!record(v) || typeof v.sessionId !== "string" || !Array.isArray(v.messages)) throw fault("INVALID_PARAMS", "session/sync-canonical requires sessionId and messages[]");
   return v as { sessionId: string; messages: Message[]; expectedRevision?: number };
 }

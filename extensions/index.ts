@@ -1,7 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { fileURLToPath } from "node:url";
 import { loadConfig } from "../src/config.js";
 import { notificationSummary } from "../src/notifications.js";
 import { RuntimeManager } from "../src/runtime-manager.js";
@@ -156,6 +155,7 @@ DSH session: ${result.sessionId}` }],
   pi.registerCommand("dsh-status", {
     description: "Show bridge runtime status and active configuration",
     handler: async (_args, ctx) => {
+      await Promise.resolve();
       const config = loadConfig(ctx.cwd, { dshBin: pi.getFlag("dsh-bin") as string | undefined,
         dshHome: pi.getFlag("dsh-home") as string | undefined });
       const status = manager.status();

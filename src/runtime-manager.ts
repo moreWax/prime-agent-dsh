@@ -50,7 +50,7 @@ export class RuntimeManager {
     // ACP permits one prompt at a time per session. Serialize per runtime as a
     // conservative boundary while the bridge maintains one active Prime session.
     const operation = entry.queue.then(async () => {
-      entry!.client.setHandlers({
+      entry.client.setHandlers({
         onUpdate: options.onUpdate,
         permission: async (request) => {
           const choices = request.options.map((option) => ({ id: option.optionId, label: option.name,
@@ -62,11 +62,11 @@ export class RuntimeManager {
       });
       let sessionId = options.sessionId;
       let resumed = false;
-      if (sessionId && !entry!.activeSessions.has(sessionId)) {
+      if (sessionId && !entry.activeSessions.has(sessionId)) {
         try {
-          await entry!.client.resumeSession(sessionId);
+          await entry.client.resumeSession(sessionId);
           resumed = true;
-          entry!.activeSessions.add(sessionId);
+          entry.activeSessions.add(sessionId);
         } catch (error) {
           // v0.0.1 used caller-minted `prime-<hash>` SDK session ids. ACP
           // servers assign their own ids, so migrate those aliases once by
@@ -76,11 +76,11 @@ export class RuntimeManager {
         }
       }
       if (!sessionId) {
-        sessionId = await entry!.client.newSession();
-        entry!.activeSessions.add(sessionId);
+        sessionId = await entry.client.newSession();
+        entry.activeSessions.add(sessionId);
       }
       const input = options.promptBlocks?.length ? options.promptBlocks : prompt;
-      return { ...(await entry!.client.prompt(sessionId, input, options.signal)), resumed };
+      return { ...(await entry.client.prompt(sessionId, input, options.signal)), resumed };
     });
     entry.queue = operation.catch(() => undefined);
     return operation;

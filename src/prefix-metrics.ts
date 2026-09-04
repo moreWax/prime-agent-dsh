@@ -19,7 +19,7 @@ export function stableJson(value: unknown, sortKeys = true): string {
       if (seen.has(item)) throw new Error("cyclic provider payload");
       seen.add(item);
       const result: Record<string, unknown> = {};
-      for (const key of (sortKeys ? Object.keys(item as Record<string, unknown>).sort() : Object.keys(item as Record<string, unknown>))) {
+      for (const key of (sortKeys ? Object.keys(item).sort() : Object.keys(item))) {
         if (/authorization|api[_-]?key|token|secret|password|cookie/i.test(key)) { result[key] = "[REDACTED]"; continue; }
         const value = (item as Record<string, unknown>)[key];
         if (value !== undefined) result[key] = visit(value);
