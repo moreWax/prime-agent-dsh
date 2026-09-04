@@ -62,7 +62,9 @@
     "js-yaml": "^4.2.0",
     "@deepseek-ai/dsh-agent-default-model": "0.1.2-alpha.5",
     "@deepseek-ai/dsh-session-persistence": "0.1.2-alpha.5",
-    "@deepseek-ai/dsh-user-approval": "0.1.2-alpha.5"
+    "@deepseek-ai/dsh-user-approval": "0.1.2-alpha.5",
+    "@deepseek-ai/dsh-tool-ask-user": "0.1.2-alpha.5",
+    "@deepseek-ai/dsh-user-questions": "0.1.2-alpha.5"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",

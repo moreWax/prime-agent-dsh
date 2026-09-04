@@ -16,6 +16,8 @@ import type { Context } from "@deepseek-ai/cordis";
 import type {} from "@deepseek-ai/dsh-agent-default-model";
 import type {} from "@deepseek-ai/dsh-session-persistence";
 import type { ApprovalOutcome, ApprovalRequest } from "@deepseek-ai/dsh-user-approval";
+import type { AskUserQuestionAnswer, AskUserQuestionRequest } from "@deepseek-ai/dsh-user-questions";
+import { apply as mountAskUserTool } from "@deepseek-ai/dsh-tool-ask-user";
 import { createPrivateRootConfig } from "./dsh-provider-security.js";
 import { BusyLruPool, type PoolEntry } from "./dsh-agent-pool.js";
 import type { PreparedPrimeRoute } from "./model-route.js";
@@ -63,7 +65,9 @@ interface TreeState {
 
 const trees = new Map<string, TreeState>();
 export type ApprovalAnswerer = (request: { toolName: string; reason?: string }) => Promise<boolean>;
+export type UserQuestionAnswerer = (request: AskUserQuestionRequest) => Promise<AskUserQuestionAnswer>;
 const approvalAnswerers = new WeakMap<Agent, ApprovalAnswerer>();
+const userQuestionAnswerers = new WeakMap<Agent, UserQuestionAnswerer>();
 
 async function canonicalCwd(cwd: string): Promise<string> {
   const absolute = resolve(cwd);
@@ -100,6 +104,12 @@ async function bootTree(workspaceRoot: string, fullAccess: boolean, route: Prepa
         return (await answer({ toolName: request.toolName, reason: request.reason }))
           ? "allowed-once"
           : "rejected";
+      });
+      bootCtx.on("user-questions/request", async (request: AskUserQuestionRequest, next): Promise<AskUserQuestionAnswer> => {
+        // The event itself is Agent-scoped by DSH. The identity lookup also
+        // prevents one pooled agent from consuming another agent's answerer.
+        const answer = request.agent && userQuestionAnswerers.get(request.agent);
+        return answer ? answer(request) : next();
       });
     }, import.meta.url);
   } finally {
@@ -178,6 +188,7 @@ export interface AgentPoolOptions {
   idleTtlMs: number;
   fullAccess: boolean;
   approvalAnswerer?: ApprovalAnswerer;
+  userQuestionAnswerer?: UserQuestionAnswerer;
 }
 
 export function agentPoolKey(cwd: string, sessionKey: string, fullAccess: boolean, routeFingerprint: string): string {
@@ -212,6 +223,13 @@ export async function getOrCreateAgent(key: string, opts: AgentPoolOptions): Pro
       ? await agents.resume({ resumeSessionId: SessionId(sid), ...makeOptions() })
       : await agents.create({ sessionId: SessionId(sid), meta: { cwd }, ...makeOptions() });
     await handle.agent.whenIdle();
+    // Standard DSH presets already mount this. Custom/minimal presets may not;
+    // mount it in the agent realm only when the registry lacks it.
+    // Cordis' dynamic service lookup is intentionally untyped at this boundary.
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const tools = handle.agent.ctx.get("tools");
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+    if (!tools?.get("ask_user_question", handle.agent)) mountAskUserTool(handle.agent.ctx);
     return {
       key: isolatedKey, cwd, sessionId: sid, lastUsedAt: Date.now(),
       idleTtlMs: opts.idleTtlMs, activeUses: 0, fullAccess: opts.fullAccess,
@@ -219,6 +237,7 @@ export async function getOrCreateAgent(key: string, opts: AgentPoolOptions): Pro
     };
   });
   if (opts.approvalAnswerer) approvalAnswerers.set(entry.agent, opts.approvalAnswerer);
+  if (opts.userQuestionAnswerer) userQuestionAnswerers.set(entry.agent, opts.userQuestionAnswerer);
   return entry;
 }
 

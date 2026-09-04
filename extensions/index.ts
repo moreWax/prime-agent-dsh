@@ -10,6 +10,7 @@ import { DurableCompactionController, loadCompactionPlannerConfig } from "../src
 import { CONFIG_PATH_FOR_DIAGNOSTICS, loadConfig as loadProviderConfig } from "../src/dsh-provider-config.js";
 import { bindSessionRuntime, createInstanceRuntime, registerProvider } from "../src/dsh-provider.js";
 import { TransparentProviderController } from "../src/transparent-provider.js";
+import { createPrimeUserQuestionAnswerer, rejectHeadlessUserQuestion } from "../src/prime-user-questions.js";
 
 interface DshDetails {
   sessionId: string;
@@ -135,6 +136,9 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
           reason ?? "Allow this operation once outside the workspace sandbox?",
         )
       : undefined;
+    providerRuntime.userQuestionAnswerer = ctx.hasUI
+      ? createPrimeUserQuestionAnswerer(ctx.ui)
+      : rejectHeadlessUserQuestion;
     bindSessionRuntime(sessionId, providerRuntime);
     if (ctx.hasUI) {
       const configHint = providerConfig.loadedFrom ? "" : `; defaults (no ${CONFIG_PATH_FOR_DIAGNOSTICS})`;

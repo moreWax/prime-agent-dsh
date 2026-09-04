@@ -19,6 +19,7 @@ import {
   runTurn,
   type AgentEntry,
   type SessionEventShape,
+  type UserQuestionAnswerer,
 } from "./dsh-provider-host.js";
 
 const PROVIDER_DISPLAY_NAME = "DeepSeek Harness";
@@ -31,6 +32,7 @@ export interface InstanceRuntime {
   /** Stable identity of the Pi CONVERSATION (session id, survives resume). */
   sessionKey: string;
   approvalAnswerer?: (request: { toolName: string; reason?: string }) => Promise<boolean>;
+  userQuestionAnswerer?: UserQuestionAnswerer;
   /** Resolves the native model and already-resolved request auth for this call. */
   resolveRoute?: (model: Model<Api>, options: SimpleStreamOptions | undefined) => Promise<PreparedPrimeRoute>;
 }
@@ -140,6 +142,7 @@ function streamDshPool(
         idleTtlMs: cfg.poolIdleTtlMs,
         fullAccess: cfg.fullAccess,
         approvalAnswerer: runtime.approvalAnswerer,
+        userQuestionAnswerer: runtime.userQuestionAnswerer,
       });
       entryRef = entry;
       const translator = new TurnTranslator(output, stream);
