@@ -1,7 +1,9 @@
+import { sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext, ProviderConfig } from "@earendil-works/pi-coding-agent";
 import * as PiAi from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import type { Api, AssistantMessageEvent, AssistantMessageEventStream, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
+import { transcriptFromMessages, type TranscriptMessage } from "./context-seed.js";
+import type { Api, AssistantMessageEventStream, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import type { ResolvedConfig } from "./dsh-provider-types.js";
 import { bindSessionRuntime, createInstanceRuntime, streamDsh, type InstanceRuntime } from "./dsh-provider.js";
 import { PrimeRouteRegistry } from "./model-route.js";
@@ -95,6 +97,15 @@ export class TransparentProviderController {
         // Anchors never break the provider path.
       }
     };
+    // Stage 3: seed DSH from Prime's canonical transcript when the persisted
+    // DSH session is gone. Best-effort; called only at agent creation.
+    this.runtime.resolveSeed = () => {
+      try {
+        return resolvePrimeTranscript(ctx);
+      } catch {
+        return [];
+      }
+    };
     bindSessionRuntime(this.runtime.sessionKey, this.runtime);
   }
 
@@ -162,7 +173,7 @@ export class TransparentProviderController {
         "error",
       );
       try {
-        for await (const nativeEvent of native(model, context, options)) out.push(nativeEvent as AssistantMessageEvent);
+        for await (const nativeEvent of native(model, context, options)) out.push(nativeEvent);
       } finally {
         out.end();
       }
@@ -174,10 +185,10 @@ export class TransparentProviderController {
           return;
         }
         produced = true;
-        out.push(event as AssistantMessageEvent);
+        out.push(event);
       }
       out.end();
-    } catch (error) {
+    } catch {
       if (!produced) await fallback();
       else out.end();
     }
@@ -214,4 +225,26 @@ export async function* fallbackOnDshFailure(
       throw error;
     }
   }
+}
+
+
+/**
+ * Stage 3: walk Prime's committed session tree and reduce it to surface
+ * user/assistant text (DSH-internal events are anchored separately via
+ * pi-dsh/turn entries; the transcript carries the canonical conversation).
+ */
+function resolvePrimeTranscript(ctx: ExtensionContext): TranscriptMessage[] {
+  const convert = sessionEntryToContextMessages as unknown as
+    (entry: unknown) => Array<{ role: string; content: unknown }> | undefined;
+  const entries = (ctx.sessionManager.getBranch?.() ?? []) as unknown[];
+  const out: Array<{ role: string; content: unknown }> = [];
+  for (const entry of entries) {
+    try {
+      const messages = convert(entry);
+      if (messages) out.push(...messages);
+    } catch {
+      // skip entries this Prime version cannot convert
+    }
+  }
+  return transcriptFromMessages(out);
 }

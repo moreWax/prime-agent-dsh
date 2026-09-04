@@ -1,6 +1,6 @@
 {
   "name": "prime-agent-dsh",
-  "version": "0.0.10",
+  "version": "0.0.11",
   "description": "DeepSeek Harness inference-context integration and explicit DSH delegation for Prime Agent.",
   "keywords": [
     "pi-package",

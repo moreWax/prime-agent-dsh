@@ -22,6 +22,7 @@ export function loadConfig(): ResolvedConfig {
   const envPoolMax = coercePositiveInt(process.env.PI_DSH_POOL_MAX);
   const envPoolIdle = coercePositiveInt(process.env.PI_DSH_POOL_IDLE_TTL_MS);
   const envFullAccess = coerceFullAccess(process.env.PI_DSH_FULL_ACCESS);
+  const envResumeSeed = coerceBoolean(process.env.PI_DSH_RESUME_SEED);
 
   return {
     dshBin: envBin || fromFile.parsed.dshBin?.trim() || DEFAULT_DSH_BIN,
@@ -32,6 +33,7 @@ export function loadConfig(): ResolvedConfig {
     fullAccess: envFullAccess ?? fromFile.parsed.fullAccess ?? false,
     mcpServers: mergeMcpServers(fromFile.parsed.mcpServers ?? [], readPrimeMcpServers()),
     persistentTerminal: fromFile.parsed.persistentTerminal ?? false,
+    resumeSeed: envResumeSeed ?? fromFile.parsed.resumeSeed ?? false,
     model: readDshDefaultModel(),
     loadedFrom: fromFile.exists ? CONFIG_PATH : undefined,
   };
@@ -122,6 +124,7 @@ export function coerceConfigFile(value: unknown, path: string): ConfigFile {
     out.poolIdleTtlMs = value.poolIdleTtlMs;
   }
   if (typeof value.persistentTerminal === "boolean") out.persistentTerminal = value.persistentTerminal;
+  if (typeof value.resumeSeed === "boolean") out.resumeSeed = value.resumeSeed;
   if (Array.isArray(value.mcpServers)) {
     const names = new Set<string>();
     out.mcpServers = value.mcpServers.flatMap((entry, index) => {

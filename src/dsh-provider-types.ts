@@ -40,6 +40,13 @@ export interface ConfigFile {
   fullAccess?: boolean;
   /** Operator-declared servers mounted in each pooled Agent scope. */
   mcpServers?: McpServerConfig[];
+  /**
+   * Stage 3: when a Prime conversation resumes but its persisted DSH session
+   * is gone, rebuild the DSH log from Prime's canonical transcript. Default
+   * false pending the live-test pass; enable with "resumeSeed": true or
+   * PI_DSH_RESUME_SEED=1.
+   */
+  resumeSeed?: boolean;
   /** Enable an owner-scoped persistent shell tool. Default false. */
   persistentTerminal?: boolean;
 }
@@ -63,6 +70,7 @@ export interface ResolvedConfig {
   /** Route ordinary Prime provider turns through DSH. */
   mcpServers: McpServerConfig[];
   persistentTerminal: boolean;
+  resumeSeed: boolean;
   /**
    * The real model DSH is configured to run, read from its settings.yaml at
    * load time. Undefined when unreadable — the catalog then falls back to the

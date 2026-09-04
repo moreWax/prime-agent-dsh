@@ -26,6 +26,13 @@ Operators can add DSH-only servers or override an inherited entry by `serverName
 }
 ```
 
+
+**Resume seeding (Stage 3, opt-in).** When a Prime conversation resumes but its
+persisted DSH session is gone (pool eviction, cleanup), `"resumeSeed": true` in
+`dsh.json` (or `PI_DSH_RESUME_SEED=1`) rebuilds the DSH session log from Prime's
+canonical transcript instead of starting blank. Best-effort and never fatal: if
+the host DSH session rejects seeding, the conversation starts fresh. Default
+false until the live-test pass completes.
 Both features default off. Stdio commands and optional working directories must be absolute. HTTP endpoints must use `http` or `https`. Server names must match `[A-Za-z0-9_-]{1,32}` and be unique. Invalid entries are ignored with a warning. Initial MCP connection failure aborts unpublished Agent creation. Servers and the persistent shell are Agent-scoped and are disposed with the pooled Agent. There is no model-facing server-management tool, so only the operator-owned config can select commands, URLs, environment values, or headers. Treat those fields and this file as secrets.
 
 Alpha.5 already mounts `web_search` and SSRF-guarded anonymous `web_fetch` in the base bundle. Search resolves `DEEPSEEK_API_KEY` per request through DSH credentials (`$DSH_HOME/.credentials.yaml`, inherited environment, then project/user `.env` fallback) and uses DeepSeek's separate Messages/search endpoint. This package does not copy Prime provider credentials into DSH or accept web credentials in `dsh.json`.

@@ -22,6 +22,7 @@ import * as McpClient from "@deepseek-ai/dsh-mcp-client";
 import * as PersistentBash from "@deepseek-ai/dsh-tool-bash-persistent";
 import { createPrivateRootConfig } from "./dsh-provider-security.js";
 import { BusyLruPool, type PoolEntry } from "./dsh-agent-pool.js";
+import type { TranscriptMessage } from "./context-seed.js";
 import type { PreparedPrimeRoute } from "./model-route.js";
 import type { McpServerConfig } from "./dsh-provider-types.js";
 import { admitPrimeTurnContent, type PrimeTurnContent } from "./dsh-image-attachments.js";
@@ -246,6 +247,9 @@ export interface AgentPoolOptions {
   userQuestionAnswerer?: UserQuestionAnswerer;
   mcpServers: McpServerConfig[];
   persistentTerminal: boolean;
+  /** Stage 3: rebuild the DSH log from Prime's transcript when nothing persisted. */
+  resumeSeed?: boolean;
+  seed?: () => Promise<TranscriptMessage[]> | TranscriptMessage[];
 }
 
 export function agentPoolKey(cwd: string, sessionKey: string, fullAccess: boolean, routeFingerprint: string): string {
@@ -297,6 +301,20 @@ export async function getOrCreateAgent(key: string, opts: AgentPoolOptions): Pro
     const handle = persisted
       ? await agents.resume({ resumeSessionId: SessionId(sid), ...makeOptions() })
       : await agents.create({ sessionId: SessionId(sid), meta: { cwd }, ...makeOptions() });
+    if (!persisted && opts.resumeSeed && opts.seed) {
+      // Stage 3 (best-effort): rebuild from Prime's canonical transcript so a
+      // resumed conversation whose DSH session was evicted continues with its
+      // history instead of starting blank. Never fatal.
+      try {
+        const transcript = await opts.seed();
+        if (transcript.length > 0) {
+          const { seedSession } = await import("./context-seed.js");
+          seedSession(handle.agent.session as never, transcript);
+        }
+      } catch {
+        // fall back to a blank start
+      }
+    }
     await handle.agent.whenIdle();
     // Standard DSH presets already mount this. Custom/minimal presets may not;
     // mount it in the agent realm only when the registry lacks it.

@@ -5,7 +5,7 @@ import type { ExtensionAPI, ExtensionContext, ProviderConfig } from "@earendil-w
 import { fallbackOnDshFailure, TransparentProviderController } from "../src/transparent-provider.js";
 
 const model: Model<Api> = { id: "m", name: "Model", provider: "native", api: "openai-completions", baseUrl: "http://localhost", reasoning: false, input: ["text"], contextWindow: 1000, maxTokens: 100, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
-const cfg = { dshBin: "dsh", timeoutMs: 1, mode: "pool" as const, poolMax: 1, poolIdleTtlMs: 1, fullAccess: false, mcpServers: [], persistentTerminal: false };
+const cfg = { dshBin: "dsh", timeoutMs: 1, mode: "pool" as const, poolMax: 1, poolIdleTtlMs: 1, fullAccess: false, mcpServers: [], persistentTerminal: false, resumeSeed: false };
 
 function fixture() {
   const handlers = new Map<string, Array<(event: never, ctx: ExtensionContext) => Promise<void> | void>>();
@@ -70,7 +70,9 @@ test("fallback: DSH content-first passes through untouched even on later errors"
 });
 
 test("fallback: DSH stream that throws before content switches to native", async () => {
-  const dsh: StreamLike = { async *[Symbol.asyncIterator]() { throw new Error("boom"); } };
+  const dsh: StreamLike = {
+    async *[Symbol.asyncIterator]() { throw new Error("boom"); yield undefined; },
+  };
   const native = events({ type: "text", delta: "saved" });
   const out = await collect(fallbackOnDshFailure(dsh, () => native));
   assert.deepEqual(out, [{ type: "text", delta: "saved" }]);

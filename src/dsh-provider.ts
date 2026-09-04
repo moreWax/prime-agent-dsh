@@ -14,6 +14,7 @@ import { classifyTurnEnd, textBlockKey, thinkingBlockKey, type TurnOutcome } fro
 import type { ResolvedConfig } from "./dsh-provider-types.js";
 import type { PrimeTurnContent } from "./dsh-image-attachments.js";
 import type { PreparedPrimeRoute } from "./model-route.js";
+import type { TranscriptMessage } from "./context-seed.js";
 import {
   destroyAgent,
   getOrCreateAgent,
@@ -49,6 +50,8 @@ export interface InstanceRuntime {
    * (e.g. into Prime's canonical session JSONL). Never throws into the stream.
    */
   onTurnComplete?: (info: TurnCompleteInfo) => void;
+  /** Stage 3: supply Prime's canonical transcript for resume seeding. */
+  resolveSeed?: () => TranscriptMessage[] | Promise<TranscriptMessage[]>;
 }
 
 export function createInstanceRuntime(): InstanceRuntime {
@@ -159,6 +162,8 @@ function streamDshPool(
         userQuestionAnswerer: runtime.userQuestionAnswerer,
         mcpServers: cfg.mcpServers,
         persistentTerminal: cfg.persistentTerminal,
+        resumeSeed: cfg.resumeSeed,
+        seed: runtime.resolveSeed,
       });
       entryRef = entry;
       const translator = new TurnTranslator(output, stream);
