@@ -6,7 +6,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 
 const SUPPORTED = new Set(["openai-completions", "openai-responses", "anthropic-messages"]);
 const HOP_HEADERS = new Set(["host", "connection", "content-length", "transfer-encoding", "upgrade", "proxy-authorization", "proxy-authenticate", "te", "trailer"]);
-const COMPAT_KEYS = new Set(["supportsStore", "supportsDeveloperRole", "supportsReasoningEffort", "supportsUsageInStreaming", "supportsFinishReason", "maxTokensField", "requiresToolResultName", "requiresAssistantAfterToolResult", "requiresThinkingAsText", "requiresReasoningContentOnAssistantMessages", "thinkingFormat", "chatTemplateKwargs", "chatTemplateArgs", "supportsThinkingTokenBudget", "supportsStrictMode", "cacheControlFormat", "supportsLongCacheRetention", "supportsEagerToolInputStreaming"]);
+const COMPAT_KEYS = new Set(["supportsStore", "supportsReasoningEffort", "supportsUsageInStreaming", "supportsFinishReason", "maxTokensField", "requiresToolResultName", "requiresAssistantAfterToolResult", "requiresThinkingAsText", "requiresReasoningContentOnAssistantMessages", "thinkingFormat", "chatTemplateKwargs", "chatTemplateArgs", "supportsThinkingTokenBudget", "supportsStrictMode", "cacheControlFormat", "supportsLongCacheRetention", "supportsEagerToolInputStreaming"]);
 
 export interface ResolvedPrimeAuth { apiKey?: string; headers?: Record<string, string>; }
 export interface PrimeModelRoute {
@@ -58,6 +58,17 @@ function safeHeaders(headers: Record<string, string> | undefined): Record<string
   return result;
 }
 
+
+function normalizeRequestRoles(body: Buffer): Buffer {
+  let parsed: unknown;
+  try { parsed = JSON.parse(body.toString("utf8")); } catch { return body; }
+  if (!parsed || typeof parsed !== "object" || !Array.isArray((parsed as { messages?: unknown[] }).messages)) return body;
+  for (const message of (parsed as { messages: Array<Record<string, unknown>> }).messages) {
+    if (message && typeof message === "object" && message.role === "developer") message.role = "system";
+  }
+  return Buffer.from(JSON.stringify(parsed), "utf8");
+}
+
 export class PrimeInferenceProxy {
   private server?: Server;
   private port?: number;
@@ -95,8 +106,13 @@ export class PrimeInferenceProxy {
         }
         const body: Uint8Array[] = [];
         for await (const chunk of request) body.push(Uint8Array.from(chunk as Iterable<number>));
+        const raw = request.method === "GET" || request.method === "HEAD" ? undefined : Buffer.concat(body);
+        // Some hosts seed DSH with `developer`-role messages (OpenAI convention).
+        // Upstream Prime endpoints may only accept system/user/assistant/tool, so
+        // normalize before forwarding — every DSH inference passes through here.
+        const payload = raw ? normalizeRequestRoles(raw) : undefined;
         const upstreamResponse = await fetch(upstream, { method: request.method, headers,
-          body: request.method === "GET" || request.method === "HEAD" ? undefined : Buffer.concat(body), redirect: "manual" });
+          body: payload as unknown as BodyInit, redirect: "manual" });
         const outHeaders: Record<string, string> = {};
         upstreamResponse.headers.forEach((val, name) => { if (!HOP_HEADERS.has(name.toLowerCase())) outHeaders[name] = val; });
         response.writeHead(upstreamResponse.status, outHeaders);

@@ -65,3 +65,28 @@ test("reasoning efforts follow Prime's model map and drop undispatchable wire va
     assert.match(patchText, /"high"/);
   } finally { await route.proxy.close(); }
 });
+
+
+test("proxy normalizes developer-role messages to system before forwarding upstream", async () => {
+  let seenBody = "";
+  const upstream = createServer((request, response) => {
+    const chunks: Buffer[] = [];
+    request.on("data", (c) => chunks.push(Buffer.from(c)));
+    request.on("end", () => { seenBody = Buffer.concat(chunks).toString("utf8"); response.writeHead(200, { "content-type": "application/json" }); response.end('{"ok":true}'); });
+  });
+  await new Promise<void>((resolve) => upstream.listen(4029, "127.0.0.1", resolve));
+  const home = "/tmp/prime-agent-dsh-role-test"; await rm(home, { recursive: true, force: true });
+  const route = await preparePrimeRoute({ model: { ...model, baseUrl: "http://127.0.0.1:4029/v1" }, auth: {} }, home);
+  try {
+    const response = await fetch(`${route.proxy.baseUrl}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${route.proxy.token}`, "content-type": "application/json" },
+      body: JSON.stringify({ model: "m", messages: [{ role: "developer", content: "you are the agent" }, { role: "user", content: "hi" }] }),
+    });
+    assert.equal(response.status, 200);
+    const parsed = JSON.parse(seenBody) as { messages: Array<{ role: string }> };
+    assert.equal(parsed.messages[0]?.role, "system");
+    assert.ok(seenBody.includes("system"));
+    assert.ok(!seenBody.includes("developer"));
+  } finally { await route.proxy.close(); await new Promise<void>((resolve) => upstream.close(() => resolve())); }
+});
