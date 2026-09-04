@@ -1,132 +1,38 @@
 import { Session, SessionId } from "@deepseek-ai/dsh-session";
 import { createAssistantMessage, createUserMessage, freezeMessage, type AssistantMessage, type Message, type ToolResultMessage, type UserMessage } from "@deepseek-ai/dsh-llm";
-import { PROTOCOL, type Request, type Success, type Failure, type SimpleMessage } from "./context-protocol.js";
+import { PROTOCOL, type BranchKey, type CanonicalSyncParams, type MethodResult, type ProjectParams, type ProjectResult, type ProtocolErrorCode, type Request, type RequestId, type Response, type SessionSummary, type ShutdownResult, type SimpleMessage, type StatusResult, type Success, type SyncParams, type SyncResult, type InitializeResult } from "./context-protocol.js";
 
-type State = { session: Session; revision: number; canonical?: readonly Message[] };
-type SyncParams = { sessionId: string; messages: SimpleMessage[]; expectedRevision?: number };
-type ProjectParams = { sessionId: string; from?: number; limit?: number };
-const record = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+type State = { session: Session; revision: number; canonical: readonly Message[] };
+type ObjectValue = Record<string, unknown>;
+const object = (value: unknown): ObjectValue | undefined => typeof value === "object" && value !== null && !Array.isArray(value) ? value as ObjectValue : undefined;
+const integer = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+const stateKey = (key: BranchKey): string => JSON.stringify([key.sessionId, key.branchId]);
+class ProtocolFault extends Error { constructor(readonly code: ProtocolErrorCode, message: string, readonly data?: unknown) { super(message); } }
+const fault = (code: ProtocolErrorCode, message: string, data?: unknown): ProtocolFault => new ProtocolFault(code, message, data);
+
+class Validator {
+  request(raw: unknown): Request { const v=object(raw); if(!v) throw fault("INVALID_REQUEST","request must be an object"); if(v.version!==PROTOCOL) throw fault("UNSUPPORTED_VERSION",`expected ${PROTOCOL}`); if((typeof v.id!=="string"&&typeof v.id!=="number")||typeof v.method!=="string") throw fault("INVALID_REQUEST","id and method are required"); return {version:PROTOCOL,id:v.id,method:v.method,...(v.params===undefined?{}:{params:v.params})}; }
+  key(raw: unknown): BranchKey { const v=object(raw); if(!v||typeof v.sessionId!=="string"||!v.sessionId||typeof v.branchId!=="string"||!v.branchId) throw fault("INVALID_PARAMS","key requires non-empty sessionId and branchId"); return {sessionId:v.sessionId,branchId:v.branchId}; }
+  revision(v:ObjectValue): number|undefined { if(v.expectedRevision!==undefined&&!integer(v.expectedRevision)) throw fault("INVALID_PARAMS","expectedRevision must be a non-negative integer"); return v.expectedRevision; }
+  sync(raw:unknown):SyncParams { const v=object(raw); if(!v||!Array.isArray(v.messages)) throw fault("INVALID_PARAMS","session/sync requires key and messages[]"); const messages=v.messages.map((x,i)=>this.simple(x,i)); const expectedRevision=this.revision(v); return {key:this.key(v.key),messages,...(expectedRevision===undefined?{}:{expectedRevision})}; }
+  canonical(raw:unknown):CanonicalSyncParams { const v=object(raw); if(!v||!Array.isArray(v.messages)) throw fault("INVALID_PARAMS","session/sync-canonical requires key and messages[]"); let messages:Message[]; try { messages=v.messages.map(m=>freezeMessage(m as Message)); } catch(error) { throw fault("INVALID_PARAMS",error instanceof Error?error.message:"invalid canonical message"); } const expectedRevision=this.revision(v); return {key:this.key(v.key),messages,...(expectedRevision===undefined?{}:{expectedRevision})}; }
+  project(raw:unknown):ProjectParams { const v=object(raw); if(!v) throw fault("INVALID_PARAMS","project requires key"); for(const name of ["from","limit"] as const) if(v[name]!==undefined&&!integer(v[name])) throw fault("INVALID_PARAMS","from and limit must be non-negative integers"); return {key:this.key(v.key),...(v.from===undefined?{}:{from:v.from as number}),...(v.limit===undefined?{}:{limit:v.limit as number})}; }
+  private simple(raw:unknown,index:number):SimpleMessage { const v=object(raw); if(!v||(v.role!=="user"&&v.role!=="assistant")||typeof v.content!=="string") throw fault("INVALID_PARAMS",`invalid message at index ${index}`); if(v.role==="user") { if(v.source!==undefined&&typeof v.source!=="string") throw fault("INVALID_PARAMS",`invalid message at index ${index}`); return {role:"user",content:v.content,...(v.source===undefined?{}:{source:v.source})}; } if(v.provider!==undefined&&typeof v.provider!=="string"||v.model!==undefined&&typeof v.model!=="string") throw fault("INVALID_PARAMS",`invalid message at index ${index}`); return {role:"assistant",content:v.content,...(v.provider===undefined?{}:{provider:v.provider}),...(v.model===undefined?{}:{model:v.model})}; }
+}
 
 export class ContextService {
-  private initialized = false;
-  private stopping = false;
-  private sessions = new Map<string, State>();
-  constructor(private readonly onShutdown: () => void = () => {}) {}
-
-  handle(raw: unknown): Success | Failure {
-    let id: string | number | null = null;
-    try {
-      if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw fault("INVALID_REQUEST", "request must be an object");
-      const r = raw as Partial<Request>; id = typeof r.id === "string" || typeof r.id === "number" ? r.id : null;
-      if (r.version !== PROTOCOL) throw fault("UNSUPPORTED_VERSION", `expected ${PROTOCOL}`);
-      if (id === null || typeof r.method !== "string") throw fault("INVALID_REQUEST", "id and method are required");
-      if (this.stopping && r.method !== "status") throw fault("SHUTTING_DOWN", "service is shutting down");
-      const result = this.dispatch(r.method, r.params);
-      return { version: PROTOCOL, id, ok: true, result };
-    } catch (e) {
-      const f = e instanceof ProtocolFault ? e : fault("INTERNAL", e instanceof Error ? e.message : String(e));
-      return { version: PROTOCOL, id, ok: false, error: { code: f.code, message: f.message, ...(f.data === undefined ? {} : { data: f.data }) } };
-    }
-  }
-
-  private dispatch(method: string, params: unknown): unknown {
-    if (method === "initialize") {
-      if (this.initialized) throw fault("ALREADY_INITIALIZED", "initialize may be called once");
-      this.initialized = true;
-      return { protocol: PROTOCOL, implementation: { name: "dsh-inference-context", version: "0.0.1" }, capabilities: { transport: ["stdio", "socket"], methods: ["initialize", "session/sync", "project", "status", "shutdown"], dshSession: true, agentLoop: false } };
-    }
-    if (!this.initialized) throw fault("NOT_INITIALIZED", "call initialize first");
-    switch (method) {
-      case "session/sync": return this.sync(assertSync(params));
-      case "session/sync-canonical": return this.syncCanonical(assertCanonicalSync(params));
-      case "project": return this.project(assertProject(params));
-      case "status": return { initialized: true, shuttingDown: this.stopping, sessionCount: this.sessions.size, sessions: [...this.sessions].map(([sessionId, s]) => ({ sessionId, revision: s.revision, eventCount: s.session.seq, messageCount: s.session.deriveMessages().length })) };
-      case "shutdown": this.stopping = true; queueMicrotask(this.onShutdown); return { accepted: true };
-      default: throw fault("METHOD_NOT_FOUND", `unknown method: ${method}`);
-    }
-  }
-
-  private sync(p: SyncParams): unknown {
-    const prior = this.sessions.get(p.sessionId);
-    if (p.expectedRevision !== undefined && p.expectedRevision !== (prior?.revision ?? 0)) throw fault("REVISION_CONFLICT", "expectedRevision does not match", { actualRevision: prior?.revision ?? 0 });
-    // Rebuild from the authoritative client snapshot. DSH Session append owns validation,
-    // event sequencing, immutable snapshots and canonical message derivation.
-    const session = Session.create(SessionId(p.sessionId));
-    for (const input of p.messages) {
-      if (input.role === "user") {
-        const msg = createUserMessage({ content: [{ type: "text", text: input.content }], source: input.source && input.source !== "user" ? { kind: "plugin", plugin: input.source } : { kind: "user" } });
-        session.append("user/message", msg, { surfaceOp: "append" });
-      } else {
-        const msg = createAssistantMessage({ content: [{ type: "text", text: input.content }], source: { provider: input.provider ?? "external", model: input.model ?? "unknown" } });
-        session.append("assistant/message", { turn: 0, step: 0, message: msg }, { surfaceOp: "append" });
-      }
-    }
-    const revision = (prior?.revision ?? 0) + 1;
-    this.sessions.set(p.sessionId, { session, revision });
-    return { sessionId: p.sessionId, revision, eventCount: session.seq, messageCount: session.deriveMessages().length };
-  }
-
-  private syncCanonical(p: { sessionId: string; messages: Message[]; expectedRevision?: number }): unknown {
-    const prior = this.sessions.get(p.sessionId);
-    if (p.expectedRevision !== undefined && p.expectedRevision !== (prior?.revision ?? 0)) throw fault("REVISION_CONFLICT", "expectedRevision does not match", { actualRevision: prior?.revision ?? 0 });
-    const incoming = p.messages.map((message) => freezeMessage(message));
-    const previous = prior?.canonical;
-    let common = 0;
-    if (previous) while (common < previous.length && common < incoming.length
-      && JSON.stringify(previous[common]) === JSON.stringify(incoming[common])) common++;
-    if (prior && previous && common === previous.length && common === incoming.length) {
-      return { sessionId: p.sessionId, revision: prior.revision, eventCount: prior.session.seq,
-        messageCount: previous.length, mode: "noop", commonPrefixMessages: common };
-    }
-    let session: Session;
-    let mode: "append" | "rebuild";
-    if (prior && previous && common === previous.length) {
-      session = prior.session; mode = "append";
-      this.appendCanonical(session, incoming.slice(common), common);
-    } else {
-      session = Session.create(SessionId(p.sessionId)); mode = "rebuild";
-      this.appendCanonical(session, incoming, 0);
-    }
-    const revision = (prior?.revision ?? 0) + 1;
-    this.sessions.set(p.sessionId, { session, revision, canonical: incoming });
-    return { sessionId: p.sessionId, revision, eventCount: session.seq, messageCount: session.deriveMessages().length,
-      mode, commonPrefixMessages: common };
-  }
-
-  private appendCanonical(session: Session, messages: readonly Message[], offset: number): void {
-    for (const [index, message] of messages.entries()) {
-      const step = offset + index;
-      if (message.role === "assistant") {
-        session.append("assistant/message", { turn: step, step, message: message as AssistantMessage }, { surfaceOp: "append" });
-        for (const block of message.content) if (block.type === "tool-call") {
-          session.append("tool/call", { turn: step, step, callId: block.id, name: block.name, arguments: block.arguments });
-        }
-      } else if (message.source.kind === "tool") {
-        session.append("tool/result", { turn: step, step, message: message as ToolResultMessage }, { surfaceOp: "append" });
-      } else session.append("user/message", message as UserMessage, { surfaceOp: "append" });
-    }
-  }
-
-  private project(p: ProjectParams): unknown {
-    const state = this.sessions.get(p.sessionId); if (!state) throw fault("SESSION_NOT_FOUND", `unknown session: ${p.sessionId}`);
-    const all = state.session.deriveMessages(); const from = p.from ?? 0; const limit = p.limit ?? all.length;
-    if (!Number.isSafeInteger(from) || from < 0 || !Number.isSafeInteger(limit) || limit < 0) throw fault("INVALID_PARAMS", "from and limit must be non-negative integers");
-    return { sessionId: p.sessionId, revision: state.revision, total: all.length, from, messages: all.slice(from, from + limit) };
-  }
-}
-class ProtocolFault extends Error { constructor(readonly code: string, message: string, readonly data?: unknown) { super(message); } }
-function fault(code: string, message: string, data?: unknown): ProtocolFault { return new ProtocolFault(code, message, data); }
-function assertSync(v: unknown): SyncParams {
-  if (!record(v) || typeof v.sessionId !== "string" || !Array.isArray(v.messages)) throw fault("INVALID_PARAMS", "session/sync requires sessionId and messages[]");
-  const p = v as SyncParams; if (!p.sessionId) throw fault("INVALID_PARAMS", "sessionId must not be empty");
-  if (p.expectedRevision !== undefined && (!Number.isSafeInteger(p.expectedRevision) || p.expectedRevision < 0)) throw fault("INVALID_PARAMS", "expectedRevision must be a non-negative integer");
-  p.messages.forEach((m, i) => { if (!m || (m.role !== "user" && m.role !== "assistant") || typeof m.content !== "string") throw fault("INVALID_PARAMS", `invalid message at index ${i}`); }); return p;
-}
-function assertProject(v: unknown): ProjectParams {
-  if (!record(v) || typeof v.sessionId !== "string") throw fault("INVALID_PARAMS", "project requires sessionId"); return v as ProjectParams;
-}
-
-function assertCanonicalSync(v: unknown): { sessionId: string; messages: Message[]; expectedRevision?: number } {
-  if (!record(v) || typeof v.sessionId !== "string" || !Array.isArray(v.messages)) throw fault("INVALID_PARAMS", "session/sync-canonical requires sessionId and messages[]");
-  return v as { sessionId: string; messages: Message[]; expectedRevision?: number };
+ private initialized=false; private stopping=false; private readonly sessions=new Map<string,State>(); private readonly validator=new Validator();
+ constructor(private readonly onShutdown:()=>void=()=>{}){}
+ handle(raw:unknown):Response { let id:RequestId|null=null; try { const req=this.validator.request(raw); id=req.id; if(this.stopping&&req.method!=="status") throw fault("SHUTTING_DOWN","service is shutting down"); return this.success(id,this.dispatch(req)); } catch(error) { const f=error instanceof ProtocolFault?error:fault("INTERNAL",error instanceof Error?error.message:String(error)); return {version:PROTOCOL,id,ok:false,error:{code:f.code,message:f.message,...(f.data===undefined?{}:{data:f.data})}}; } }
+ private success(id:RequestId,result:MethodResult):Success{return {version:PROTOCOL,id,ok:true,result};}
+ private dispatch(req:Request):MethodResult { if(req.method==="initialize") return this.initialize(); if(!this.initialized) throw fault("NOT_INITIALIZED","call initialize first"); switch(req.method){case "session/sync":return this.syncSimple(this.validator.sync(req.params));case "session/sync-canonical":return this.syncCanonical(this.validator.canonical(req.params));case "project":return this.project(this.validator.project(req.params));case "status":return this.status();case "shutdown":return this.shutdown();default:throw fault("METHOD_NOT_FOUND",`unknown method: ${req.method}`);} }
+ private initialize():InitializeResult { if(this.initialized) throw fault("ALREADY_INITIALIZED","initialize may be called once"); this.initialized=true; return {protocol:PROTOCOL,implementation:{name:"dsh-inference-context",version:"0.0.1"},capabilities:{transport:["in-process"],methods:["initialize","session/sync","session/sync-canonical","project","status","shutdown"],dshSession:true,agentLoop:false}}; }
+ private syncSimple(p:SyncParams):SyncResult { const messages=p.messages.map(input=>input.role==="user"?createUserMessage({content:[{type:"text",text:input.content}],source:input.source&&input.source!=="user"?{kind:"plugin",plugin:input.source}:{kind:"user"}}):createAssistantMessage({content:[{type:"text",text:input.content}],source:{provider:input.provider??"external",model:input.model??"unknown"}})); return this.syncCanonical({key:p.key,messages,...(p.expectedRevision===undefined?{}:{expectedRevision:p.expectedRevision})}); }
+ private syncCanonical(p:CanonicalSyncParams):SyncResult { const sk=stateKey(p.key), prior=this.sessions.get(sk), actual=prior?.revision??0; if(p.expectedRevision!==undefined&&p.expectedRevision!==actual) throw fault("REVISION_CONFLICT","expectedRevision does not match",{actualRevision:actual}); const incoming=p.messages.map(m=>freezeMessage(m)); let common=0; if(prior) while(common<prior.canonical.length&&common<incoming.length&&JSON.stringify(prior.canonical[common])===JSON.stringify(incoming[common])) common++; if(prior&&common===prior.canonical.length&&common===incoming.length) return this.syncResult(p.key,prior,"noop",common); let session:Session,mode:"append"|"rebuild"; if(prior&&common===prior.canonical.length){ session=Session.create(SessionId(p.key.sessionId),prior.session.snapshotEvents()); mode="append"; this.append(session,incoming.slice(common),common); } else { session=Session.create(SessionId(p.key.sessionId)); mode="rebuild"; this.append(session,incoming,0); } const next={session,revision:actual+1,canonical:incoming}; this.sessions.set(sk,next); return this.syncResult(p.key,next,mode,common); }
+ private append(session:Session,messages:readonly Message[],offset:number):void { messages.forEach((message,index)=>{const step=offset+index;if(message.role==="assistant"){const assistant=message as AssistantMessage;session.append("assistant/message",{turn:step,step,message:assistant},{surfaceOp:"append"});for(const block of assistant.content)if(block.type==="tool-call")session.append("tool/call",{turn:step,step,callId:block.id,name:block.name,arguments:block.arguments});}else if(message.source.kind==="tool")session.append("tool/result",{turn:step,step,message:message as ToolResultMessage},{surfaceOp:"append"});else session.append("user/message",message as UserMessage,{surfaceOp:"append"});}); }
+ private syncResult(key:BranchKey,state:State,mode:SyncResult["mode"],commonPrefixMessages:number):SyncResult{return {key,revision:state.revision,eventCount:state.session.seq,messageCount:state.canonical.length,mode,commonPrefixMessages};}
+ private project(p:ProjectParams):ProjectResult { const state=this.sessions.get(stateKey(p.key));if(!state)throw fault("SESSION_NOT_FOUND",`unknown branch: ${p.key.sessionId}/${p.key.branchId}`);const from=p.from??0,limit=p.limit??state.canonical.length;return {key:p.key,revision:state.revision,total:state.canonical.length,from,messages:state.canonical.slice(from,from+limit)}; }
+ private status():StatusResult { const sessions:SessionSummary[]=[...this.sessions.values()].map(s=>({key:this.keyFor(s),revision:s.revision,eventCount:s.session.seq,messageCount:s.canonical.length}));return {initialized:true,shuttingDown:this.stopping,sessionCount:sessions.length,sessions}; }
+ private keyFor(target:State):BranchKey { for(const [encoded,state] of this.sessions)if(state===target){const parsed:unknown=JSON.parse(encoded);if(Array.isArray(parsed)&&typeof parsed[0]==="string"&&typeof parsed[1]==="string")return {sessionId:parsed[0],branchId:parsed[1]};}throw new Error("orphan session state"); }
+ private shutdown():ShutdownResult{this.stopping=true;queueMicrotask(this.onShutdown);return {accepted:true};}
 }

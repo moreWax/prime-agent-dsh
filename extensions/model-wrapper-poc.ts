@@ -70,8 +70,8 @@ export class ModelWrapperController {
     return definition ? ctx.modelRegistry.find(DSH_CONTEXT_PROVIDER, definition.id) : undefined;
   }
 
-  private sessionKey(ctx: ExtensionContext): string {
-    return `${ctx.sessionManager.getSessionId()}:${ctx.sessionManager.getLeafId() ?? "root"}`;
+  private sessionKey(ctx: ExtensionContext): { sessionId: string; branchId: string } {
+    return { sessionId: ctx.sessionManager.getSessionId(), branchId: ctx.sessionManager.getLeafId() ?? "root" };
   }
 }
 

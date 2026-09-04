@@ -1,28 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ContextService } from "../src/dsh-context-service.js";
-import { PROTOCOL } from "../src/context-protocol.js";
-
-test("DSH shadow service projects a simple Prime transcript without an agent loop", () => {
-  const service = new ContextService();
-  const call = (id: number, method: string, params?: unknown) => service.handle({ version: PROTOCOL, id, method, params }) as any;
-  assert.equal(call(1, "initialize").result.capabilities.agentLoop, false);
-  const sync = call(2, "session/sync", { sessionId: "prime:s:leaf", expectedRevision: 0,
-    messages: [{ role: "user", content: "hello" }, { role: "assistant", content: "world", provider: "p", model: "m" }] });
-  assert.equal(sync.result.messageCount, 2);
-  const projected = call(3, "project", { sessionId: "prime:s:leaf" });
-  assert.deepEqual(projected.result.messages.map((message: any) => message.role), ["user", "assistant"]);
-});
-
-test("canonical sync is no-op when identical and appends only a suffix", async () => {
-  const { primeToDsh } = await import("../src/context-converter.js");
-  const service = new ContextService(); const call = (id: number, method: string, params?: unknown) => service.handle({ version: PROTOCOL, id, method, params }) as any;
-  call(1, "initialize");
-  const first = [primeToDsh({ id: "u1", message: { role: "user", content: [{ type: "text", text: "a" }] } } as any)];
-  const a = call(2, "session/sync-canonical", { sessionId: "s", messages: first, expectedRevision: 0 });
-  const b = call(3, "session/sync-canonical", { sessionId: "s", messages: first, expectedRevision: 1 });
-  const second = [...first, primeToDsh({ id: "a1", message: { role: "assistant", content: [{ type: "text", text: "b" }], provider: "p", model: "m" } } as any)];
-  const c = call(4, "session/sync-canonical", { sessionId: "s", messages: second, expectedRevision: 1 });
-  assert.equal(a.result.mode, "rebuild"); assert.equal(b.result.mode, "noop"); assert.equal(b.result.revision, 1);
-  assert.equal(c.result.mode, "append"); assert.equal(c.result.commonPrefixMessages, 1); assert.equal(c.result.revision, 2);
-});
+import { ContextProtocolClient } from "../src/context-protocol.js";
+import { primeToDsh } from "../src/context-converter.js";
+const key=(branchId:string)=>({sessionId:"prime-session",branchId});
+const service=()=>{const backend=new ContextService();const client=new ContextProtocolClient(request=>backend.handle(request));assert.equal(client.call("initialize").ok,true);return client;};
+void test("typed client projects canonical messages",()=>{const client=service();const messages=[primeToDsh({role:"user",content:[{type:"text",text:"hello"}]})];const sync=client.call("session/sync-canonical",{key:key("main"),messages,expectedRevision:0});assert(sync.ok);assert.equal(sync.result.messageCount,1);const projected=client.call("project",{key:key("main")});assert(projected.ok);assert.equal(projected.result.messages[0]?.role,"user");});
+void test("incremental sync is noop, append, and atomic on invalid suffix",()=>{const client=service(),k=key("main");const first=[primeToDsh({role:"user",content:"a"}, {}, "u1")];const a=client.call("session/sync-canonical",{key:k,messages:first,expectedRevision:0});assert(a.ok);const b=client.call("session/sync-canonical",{key:k,messages:first,expectedRevision:1});assert(b.ok);assert.equal(b.result.mode,"noop");assert.equal(b.result.revision,1);const second=[...first,primeToDsh({role:"assistant",content:"b",provider:"p",model:"m"},{},"a1")];const c=client.call("session/sync-canonical",{key:k,messages:second,expectedRevision:1});assert(c.ok);assert.equal(c.result.mode,"append");assert.equal(c.result.commonPrefixMessages,1);assert.equal(c.result.revision,2);const conflict=client.call("session/sync-canonical",{key:k,messages:first,expectedRevision:1});assert.equal(conflict.ok,false);const project=client.call("project",{key:k});assert(project.ok);assert.equal(project.result.total,2);});
+void test("branch keys isolate equal session ids",()=>{const client=service();for(const branch of ["left","right"]){const r=client.call("session/sync",{key:key(branch),messages:[{role:"user",content:branch}],expectedRevision:0});assert(r.ok);}const left=client.call("project",{key:key("left")});const right=client.call("project",{key:key("right")});assert(left.ok&&right.ok);assert.notDeepEqual(left.result.messages,right.result.messages);const status=client.call("status");assert(status.ok);assert.equal(status.result.sessionCount,2);});

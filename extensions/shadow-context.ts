@@ -3,7 +3,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { Message } from "@deepseek-ai/dsh-llm";
 import { ShadowContextTelemetry, type ShadowLocation, type ShadowTraceEntry } from "../src/shadow-telemetry.js";
 import { ContextService } from "../src/dsh-context-service.js";
-import { PROTOCOL, type Failure, type Success } from "../src/context-protocol.js";
+import { ContextProtocolClient, type BranchKey } from "../src/context-protocol.js";
 import { primeToDsh, dshToPrime, type PrimeEnvelope, type PrimeMessage } from "../src/context-converter.js";
 import { stableJson } from "../src/prefix-metrics.js";
 
@@ -17,7 +17,6 @@ interface MirrorCounters {
 }
 interface SyncResult { revision: number; messageCount: number; mode: "append" | "noop" | "rebuild"; }
 interface ProjectResult { messages: Message[]; }
-type ServiceResponse = Success | Failure;
 
 type JsonObject = Record<string, unknown>;
 const isObject = (value: unknown): value is JsonObject => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -46,26 +45,28 @@ function metric(entry: ShadowTraceEntry | undefined): string {
 /** Owns the fail-open DSH mirror lifecycle and typed protocol boundary. */
 export class ShadowMirrorController {
   private readonly service: ContextService;
-  private requestId = 1;
+  private readonly client: ContextProtocolClient;
   private readonly revisions = new Map<string, number>();
   readonly counters: MirrorCounters = { syncs: 0, skips: 0, errors: 0, appends: 0, noops: 0, rebuilds: 0 };
 
   constructor(service = new ContextService()) {
     this.service = service;
-    const initialized = this.call("initialize");
+    this.client = new ContextProtocolClient(request => this.service.handle(request));
+    const initialized = this.client.call("initialize");
     if (!initialized.ok) throw new Error(`Could not initialize context shadow: ${initialized.error.message}`);
   }
 
-  observe(messages: readonly unknown[], sessionId: string): void {
+  observe(messages: readonly unknown[], key: BranchKey): void {
+    const encodedKey = JSON.stringify([key.sessionId, key.branchId]);
     try {
       const canonical = messages.map((message, index) => primeToDsh(asPrimeInput(message), {}, this.messageId(message, index)));
-      const synced = this.call("session/sync-canonical", { sessionId, messages: canonical, expectedRevision: this.revisions.get(sessionId) ?? 0 });
+      const synced = this.client.call("session/sync-canonical", { key, messages: canonical, expectedRevision: this.revisions.get(encodedKey) ?? 0 });
       if (!synced.ok || !isSyncResult(synced.result)) { this.counters.errors++; return; }
-      const projected = this.call("project", { sessionId });
+      const projected = this.client.call("project", { key });
       if (!projected.ok || !isProjectResult(projected.result)) { this.counters.errors++; return; }
       const roundTrip = projected.result.messages.map((message) => dshToPrime(message));
       if (stableJson(roundTrip) !== stableJson(messages)) { this.counters.skips++; return; }
-      this.revisions.set(sessionId, synced.result.revision);
+      this.revisions.set(encodedKey, synced.result.revision);
       this.counters.syncs++;
       if (synced.result.mode === "append") this.counters.appends++;
       else if (synced.result.mode === "noop") this.counters.noops++;
@@ -75,9 +76,6 @@ export class ShadowMirrorController {
 
   private messageId(message: unknown, index: number): string {
     return `prime-${createHash("sha256").update(`${index}:`).update(stableJson(message)).digest("hex").slice(0, 32)}`;
-  }
-  private call(method: string, params?: unknown): ServiceResponse {
-    return this.service.handle({ version: PROTOCOL, id: ++this.requestId, method, params });
   }
 }
 
@@ -95,7 +93,7 @@ export class ShadowContextExtension {
     this.pi.on("context", (event, ctx) => {
       const here = location(ctx);
       this.telemetry.observe("context", event.messages, here);
-      this.mirror.observe(event.messages, here.sessionId);
+      this.mirror.observe(event.messages, here);
     });
     this.pi.on("before_provider_request", (event, ctx) => {
       this.telemetry.observe("before_provider_request", event.payload, location(ctx));

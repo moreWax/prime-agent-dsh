@@ -1,4 +1,4 @@
-import { freezeMessage, type ContentBlock, type Message, type MessageSource, type ToolResultBlock } from "@deepseek-ai/dsh-llm";
+import { freezeMessage, type ContentBlock, type Message } from "@deepseek-ai/dsh-llm";
 import { MessageId, ToolCallId } from "@deepseek-ai/dsh-llm";
 import type { ImageAttachmentRef } from "@deepseek-ai/dsh-attachment";
 
@@ -20,7 +20,6 @@ export interface ConverterCapabilities {
 type PrimeMeta = { role: string; envelope?: Omit<PrimeEnvelope, "message">; fields: Record<string, unknown> };
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const string = (v: unknown, what: string): string => { if (typeof v !== "string") throw new TypeError(`${what} must be a string`); return v; };
-const display = (value: unknown): string => typeof value === "string" ? value : value == null ? "" : JSON.stringify(value);
 function parts(content: unknown): Record<string, unknown>[] {
   if (typeof content === "string") return [{ type: "text", text: content }];
   if (!Array.isArray(content)) throw new TypeError("message content must be a string or array");
@@ -53,15 +52,15 @@ export function primeToDsh(input: PrimeMessage | PrimeEnvelope, caps: ConverterC
   const { message: p, envelope } = split(input); const role = string(p.role, "role");
   const fields: Record<string, unknown> = {}; for (const [k, v] of Object.entries(p)) if (k !== "role" && k !== "content") fields[k] = v;
   const meta: PrimeMeta = { role, ...(envelope ? { envelope } : {}), fields };
-  let content: ContentBlock[]; let dshRole: "user" | "assistant"; let source: MessageSource & { prime: PrimeMeta };
+  let content: ContentBlock[]; let dshRole: "user" | "assistant"; let source: Message["source"] & { prime: PrimeMeta };
   if (role === "user") { content = toDshBlocks(p.content, caps, false); dshRole = "user"; source = { kind: "user", prime: meta }; }
   else if (role === "assistant") { content = toDshBlocks(p.content, caps, true); dshRole = "assistant"; source = { kind: "model", provider: typeof p.provider === "string" ? p.provider : "external", model: typeof p.model === "string" ? p.model : "unknown", ...(p.replayState === undefined ? {} : { replayState: p.replayState }), prime: meta }; }
   else if (role === "toolResult") {
     const callId = ToolCallId(string(p.toolCallId, "toolCallId"));
     content = [{ type: "tool-result", toolCallId: callId, content: toDshBlocks(p.content, caps, false), isError: p.isError === true }]; dshRole = "user"; source = { kind: "tool", callId, prime: meta };
   } else if (["bashExecution", "custom", "branchSummary", "compactionSummary"].includes(role)) {
-    const text = role === "bashExecution" ? `${display(p.command)}
-${display(p.output)}` : display(p.summary);
+    const text = role === "bashExecution" ? `${typeof p.command === "string" ? p.command : ""}
+${typeof p.output === "string" ? p.output : ""}` : typeof p.summary === "string" ? p.summary : "";
     content = role === "custom" ? toDshBlocks(p.content, caps, false) : [{ type: "text", text }]; dshRole = "user"; source = role.includes("Summary")
       ? { kind: "plugin", plugin: `prime:${role}`, form: "recall", prime: meta }
       : { kind: "plugin", plugin: `prime:${role}`, form: "notice", summary: role, prime: meta };
@@ -77,18 +76,18 @@ function fromDshBlocks(content: readonly ContentBlock[], caps: ConverterCapabili
       case "tool-call": { let args: unknown; try { args = JSON.parse(b.arguments); } catch { args = b.arguments; } return [{ type: "toolCall", id: b.id, name: b.name, arguments: args }]; }
       case "image": { if (!caps.resolveImage) throw new ConversionCapabilityError("dsh-image-resolution", "DSH image references require an attachment resolution capability", { attachment: b.attachment }); const x = caps.resolveImage(b.attachment); return [{ type: "image", data: x.data, mimeType: x.mimeType, ...(b.attachment.name ? { name: b.attachment.name } : {}) }]; }
       case "tool-result": return fromDshBlocks(b.content, caps);
-      default: throw new TypeError(`unsupported DSH content block: ${String((b as { type?: unknown }).type)}`);
+      default: throw new TypeError(`unsupported DSH content block: ${String((b as unknown as { type?: unknown }).type)}`);
     }
   });
 }
 /** Lossless DSH -> Prime projection for messages produced by this bridge; canonical mapping otherwise. */
 export function dshToPrime(message: Message, caps: ConverterCapabilities = {}): PrimeMessage | PrimeEnvelope {
-  const sourceWithPrime = message.source as MessageSource & { prime?: unknown };
+  const sourceWithPrime = message.source as Message["source"] & { prime?: unknown };
   const meta = object(sourceWithPrime.prime) ? sourceWithPrime.prime as PrimeMeta : undefined;
   if (meta) {
     const restored: PrimeMessage = { role: meta.role, ...meta.fields };
     if (["user", "assistant", "toolResult", "custom"].includes(meta.role)) restored.content = fromDshBlocks(message.content[0]?.type === "tool-result" ? message.content[0].content : message.content, caps);
-    if (meta.role === "toolResult") { const block = message.content[0] as ToolResultBlock; restored.toolCallId = block.toolCallId; restored.isError = block.isError === true; }
+    if (meta.role === "toolResult") { const block = message.content[0] as Extract<ContentBlock, { type: "tool-result" }>; restored.toolCallId = block.toolCallId; restored.isError = block.isError === true; }
     return meta.envelope ? { ...meta.envelope, message: restored } : restored;
   }
   if (message.role === "assistant") return { role: "assistant", content: fromDshBlocks(message.content, caps), provider: message.source.kind === "model" ? message.source.provider : "external", model: message.source.kind === "model" ? message.source.model : "unknown" };
