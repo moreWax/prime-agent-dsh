@@ -4,11 +4,11 @@ import { Type } from "typebox";
 import { loadConfig } from "../src/config.js";
 import { notificationSummary } from "../src/notifications.js";
 import { RuntimeManager } from "../src/runtime-manager.js";
-import { PrimeRouteRegistry, type PreparedPrimeRoute } from "../src/model-route.js";
+import { PrimeRouteRegistry } from "../src/model-route.js";
 import { registerShadowContextTelemetry } from "./shadow-context.js";
 import { DurableCompactionController, loadCompactionPlannerConfig } from "../src/compaction.js";
-import { CONFIG_PATH_FOR_DIAGNOSTICS, loadConfig as loadProviderConfig } from "../src/dsh-provider-config.js";
-import { bindSessionRuntime, createInstanceRuntime, registerProvider } from "../src/dsh-provider.js";
+import { loadConfig as loadProviderConfig } from "../src/dsh-provider-config.js";
+import { TransparentDshRouter } from "../src/transparent-routing.js";
 
 interface DshDetails {
   sessionId: string;
@@ -66,74 +66,18 @@ function sessionFor(ctx: ExtensionContext, explicit?: string): string | undefine
 export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
   registerShadowContextTelemetry(pi);
 
-  // The selectable `dsh` provider is a real in-process harness. DSH owns its
-  // agent loop, context, tools, compaction, skills, subagents, and memories;
-  // Prime only supplies the latest user turn and renders DSH's event stream.
+  // Preserve ordinary provider/model identities in Prime. Replace only each
+  // provider's stream implementation, so every native turn runs inside the
+  // persistent DSH pool without exposing a synthetic dsh model.
   const providerConfig = loadProviderConfig();
-  const providerRuntime = createInstanceRuntime();
-  let lastNativeModel: Model<Api> | undefined;
-  let lastThinkingLevel: ExtensionContext["thinkingLevel"];
-  let preparedRoute: PreparedPrimeRoute | undefined;
-  const selectNative = (model: Model<Api> | undefined): void => {
-    if (model?.provider === "dsh") return;
-    if (model) lastNativeModel = model;
-    preparedRoute = undefined;
-  };
-  const resolveProviderRoute = async (ctx: ExtensionContext): Promise<PreparedPrimeRoute> => {
-    const model = lastNativeModel;
-    if (!model) throw new Error("Select a native Prime model before using the dsh provider");
-    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-    if (!auth.ok) throw new Error(`Could not resolve Prime model authentication: ${auth.error}`);
-    const headers = auth.headers
-      ? Object.fromEntries(Object.entries(auth.headers).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
-      : undefined;
-    const dshHome = loadConfig(ctx.cwd, { dshBin: pi.getFlag("dsh-bin") as string | undefined,
-      dshHome: pi.getFlag("dsh-home") as string | undefined }).dshHome;
-    preparedRoute = await routes.prepare({ model, auth: { apiKey: auth.apiKey, headers }, thinkingLevel: lastThinkingLevel }, dshHome);
-    return preparedRoute;
-  };
-  registerProvider(pi, providerConfig, providerRuntime);
-  pi.on("model_select", (event) => {
-    selectNative(event.model as Model<Api>);
-  });
-  pi.on("thinking_level_select", (event) => {
-    lastThinkingLevel = event.level;
-    preparedRoute = undefined;
-  });
-  pi.on("session_start", async (_event, ctx) => {
-    await Promise.resolve();
-    providerRuntime.cwd = ctx.cwd;
-    selectNative(ctx.model as Model<Api> | undefined);
-    if (!lastNativeModel) {
-      // A resumed session can start while `dsh` is selected. Recover the most
-      // recent native selection from Prime's branch without copying any auth.
-      const branch = ctx.sessionManager.getBranch();
-      for (let index = branch.length - 1; index >= 0; index--) {
-        const entry = branch[index] as { type?: string; provider?: string; modelId?: string } | undefined;
-        if (entry?.type !== "model_change" || !entry.provider || !entry.modelId || entry.provider === "dsh") continue;
-        const restored = ctx.modelRegistry.find(entry.provider, entry.modelId);
-        if (restored) { selectNative(restored); break; }
-      }
-    }
-    lastThinkingLevel = ctx.thinkingLevel;
-    providerRuntime.resolveRoute = () => resolveProviderRoute(ctx);
-    const sessionId = ctx.sessionManager.getSessionId?.() ?? ctx.cwd;
-    providerRuntime.sessionKey = sessionId;
-    providerRuntime.approvalAnswerer = ctx.hasUI
-      ? ({ toolName, reason }) => ctx.ui.confirm(
-          `DSH permission: ${toolName}`,
-          reason ?? "Allow this operation once outside the workspace sandbox?",
-        )
-      : undefined;
-    bindSessionRuntime(sessionId, providerRuntime);
-    if (ctx.hasUI) {
-      const configHint = providerConfig.loadedFrom ? "" : `; defaults (no ${CONFIG_PATH_FOR_DIAGNOSTICS})`;
-      ctx.ui.notify(
-        `DSH provider ready (mode=${providerConfig.mode}, poolMax=${providerConfig.poolMax}${configHint}).`,
-        "info",
-      );
-    }
-  });
+  new TransparentDshRouter(pi, {
+    config: providerConfig,
+    routes,
+    dshHome: (ctx) => loadConfig(ctx.cwd, {
+      dshBin: pi.getFlag("dsh-bin") as string | undefined,
+      dshHome: pi.getFlag("dsh-home") as string | undefined,
+    }).dshHome,
+  }).register();
   let manager = new RuntimeManager();
   pi.registerFlag("dsh-bin", { type: "string", description: "Path to a compatible dsh executable" });
   pi.registerFlag("dsh-home", { type: "string", description: "Isolated DSH_HOME used by the bridge" });

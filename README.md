@@ -72,7 +72,7 @@ v0.0.2 replaces the narrow DSH SDK transport with ACP. Old caller-minted `prime-
 
 The equivalent CLI flags `--dsh-bin` and `--dsh-home` override those two paths.
 
-Model selection and authentication remain Prime Agent concerns. On every bridge call, the extension snapshots `ctx.model`, resolves that model through `ctx.modelRegistry.getApiKeyAndHeaders()`, and gives DSH a loopback capability URL representing that exact route. DSH never receives or persists the upstream credential. It owns context construction and sends its provider request through the Prime-owned proxy. The stable `dsh/dsh-harness` picker entry delegates the route to DSH. A new pooled session snapshots DSH’s provider, model, and reasoning effort as one selection; an existing pooled session stays pinned until eviction or restart.
+Model selection and authentication remain Prime Agent concerns. Users select ordinary Prime models in `/model`; the package does not add a `dsh` or `dsh-harness` picker entry. At session start it replaces each native provider with an identity-preserving decorator. The decorator keeps the provider ID, model catalog, authentication, refresh policy, and deferred operations, but routes normal streams through the persistent DSH pool. The already-resolved request credential and endpoint become a loopback capability route, so DSH never receives or persists the upstream credential. Model changes create a distinct route fingerprint and pooled DSH session while Prime session history continues to record the native provider/model identity.
 
 The current release supports Prime models whose wire API is `openai-completions`, `openai-responses`, or `anthropic-messages`, matching DSH's public `llm-pi-ai` adapter. Unsupported provider-specific protocols fail explicitly rather than silently changing request semantics.
 
@@ -169,8 +169,8 @@ MIT. DeepSeek Harness and its transitive dependencies retain their own licenses 
 
 ## Upstream prior art
 
-The selectable pooled DSH provider is adapted from [fatwang2/pi-dsh](https://github.com/fatwang2/pi-dsh) under the MIT License. See `THIRD_PARTY_NOTICES.md`.
+The pooled DSH provider implementation is adapted from [fatwang2/pi-dsh](https://github.com/fatwang2/pi-dsh) under the MIT License. See `THIRD_PARTY_NOTICES.md`.
 
 ## Live provider validation
 
-The pooled provider has been validated against Prime Agent 0.9.1 and DSH 0.1.2-alpha.5. Selecting `dsh/dsh-harness` after a native Prime model routes DSH inference through that Prime model while DSH owns the agent loop and context. A live test streamed reasoning/text, used DSH's own `read` tool without emitting a Prime tool call, and recalled the tool result on the next turn from the same DSH session.
+The pooled provider has been validated against Prime Agent 0.9.1 and DSH 0.1.2-alpha.5. Selecting any supported native Prime model transparently routes its inference through DSH while DSH owns the agent loop and context. A live test streamed reasoning/text, used DSH's own `read` tool without emitting a Prime tool call, and recalled the tool result on the next turn from the same DSH session.

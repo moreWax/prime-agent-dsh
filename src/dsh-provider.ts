@@ -31,8 +31,8 @@ export interface InstanceRuntime {
   /** Stable identity of the Pi CONVERSATION (session id, survives resume). */
   sessionKey: string;
   approvalAnswerer?: (request: { toolName: string; reason?: string }) => Promise<boolean>;
-  /** Resolves the last native Prime selection. It may change between DSH turns. */
-  resolveRoute?: () => Promise<PreparedPrimeRoute>;
+  /** Resolves the native model and already-resolved request auth for this call. */
+  resolveRoute?: (model: Model<Api>, options: SimpleStreamOptions | undefined) => Promise<PreparedPrimeRoute>;
 }
 
 export function createInstanceRuntime(): InstanceRuntime {
@@ -87,7 +87,7 @@ export function registerProvider(
 // Streaming — dispatch by mode
 // ---------------------------------------------------------------------------
 
-function streamDsh(
+export function streamDsh(
   model: Model<Api>,
   context: Context,
   options: SimpleStreamOptions | undefined,
@@ -131,7 +131,7 @@ function streamDshPool(
         );
       }
 
-      const route = await runtime.resolveRoute?.();
+      const route = await runtime.resolveRoute?.(model, options);
       if (!route) throw new Error("Select a native Prime model before using the dsh provider");
       const entry = await getOrCreateAgent(runtime.sessionKey, {
         cwd: runtime.cwd,
