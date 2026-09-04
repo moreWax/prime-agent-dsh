@@ -83,6 +83,18 @@ export class TransparentProviderController {
     this.runtime.approvalAnswerer = ctx.hasUI
       ? ({ toolName, reason }) => ctx.ui.confirm(`DSH permission: ${toolName}`, reason ?? "Allow this operation once outside the workspace sandbox?")
       : undefined;
+    // Stage 2: durable write-back. After every completed DSH turn, anchor the
+    // conversation (stable sid + outcome) into Prime's canonical session JSONL
+    // so a reload can reattach or rebuild DSH from Prime's own record. This is
+    // deliberately best-effort and non-fatal.
+    this.runtime.onTurnComplete = (info) => {
+      try {
+        const session = ctx.sessionManager as { appendCustomEntry?: (type: string, data?: unknown) => void };
+        session.appendCustomEntry?.("pi-dsh/turn", { v: 1, ...info });
+      } catch {
+        // Anchors never break the provider path.
+      }
+    };
     bindSessionRuntime(this.runtime.sessionKey, this.runtime);
   }
 

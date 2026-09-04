@@ -28,6 +28,14 @@ const PROVIDER_DISPLAY_NAME = "DeepSeek Harness";
 // ---------------------------------------------------------------------------
 // Per-conversation runtime (mirrors pi-factory-droid's InstanceRuntime).
 // ---------------------------------------------------------------------------
+export interface TurnCompleteInfo {
+  /** Stable DSH conversation id (see conversationSessionId). */
+  dshSessionId: string;
+  reason: "stop" | "incomplete";
+  at: number;
+  toolCalls: number;
+}
+
 export interface InstanceRuntime {
   cwd: string;
   /** Stable identity of the Pi CONVERSATION (session id, survives resume). */
@@ -36,6 +44,11 @@ export interface InstanceRuntime {
   userQuestionAnswerer?: UserQuestionAnswerer;
   /** Resolves the native model and already-resolved request auth for this call. */
   resolveRoute?: (model: Model<Api>, options: SimpleStreamOptions | undefined) => Promise<PreparedPrimeRoute>;
+  /**
+   * Fired after a completed DSH turn so the host can write a durable anchor
+   * (e.g. into Prime's canonical session JSONL). Never throws into the stream.
+   */
+  onTurnComplete?: (info: TurnCompleteInfo) => void;
 }
 
 export function createInstanceRuntime(): InstanceRuntime {
@@ -192,6 +205,16 @@ function streamDshPool(
       output.stopReason = "stop";
       stream.push({ type: "done", reason: "stop", message: output });
       stream.end();
+      try {
+        instanceRuntime.onTurnComplete?.({
+          dshSessionId: entry.sessionId,
+          reason: "stop",
+          at: Date.now(),
+          toolCalls: translator.toolCalls,
+        });
+      } catch {
+        // Anchors must never break the provider stream.
+      }
     } catch (error) {
       const reason: "aborted" | "error" = aborted || options?.signal?.aborted ? "aborted" : "error";
       output.stopReason = reason;
@@ -226,6 +249,8 @@ class TurnTranslator {
   private readonly openToolThinking = new Map<string, number>();
   turnReason: TurnOutcome = "stop";
   turnError: string | undefined;
+  /** Count of tool/call events translated this turn (for host anchors). */
+  toolCalls = 0;
 
   constructor(
     private readonly output: AssistantMessage,
@@ -239,6 +264,7 @@ class TurnTranslator {
     } else if (event.type === "turn/end") {
       this.onTurnEnd((event.data as { reason?: unknown })?.reason);
     } else if (event.type === "tool/call") {
+      this.toolCalls++;
       this.toolCall(event.data);
     } else if (event.type === "tool/result") {
       this.toolResult(event.data);
