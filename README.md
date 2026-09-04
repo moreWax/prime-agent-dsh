@@ -1,6 +1,6 @@
 ## Transparent DSH provider wrapping
 
-By default, users select ordinary Prime models exactly as before. Provider IDs, model picker entries, catalogs, and authentication are unchanged. The extension wraps each native provider’s `streamSimple` so each turn routes into an in-process DeepSeek Harness tree. Use `/dsh-transparent off` for the current process, or set `"transparent": false` in `~/.prime/agent/dsh.json` (or `PI_DSH_TRANSPARENT=0`) to opt out. `/dsh-transparent on|status` enables or reports it.
+Off by default — installing this package never changes how other providers, tools, or packages behave. When opted in, provider IDs, model picker entries, catalogs, and authentication stay unchanged; each native provider’s `streamSimple` routes the turn into an in-process DeepSeek Harness tree, which owns that turn’s loop, context, and tools. Enable per process with `/dsh-transparent on`, or persistently with `"transparent": true` in `~/.prime/agent/dsh.json` (or `PI_DSH_TRANSPARENT=1`). `/dsh-transparent off|status` disables or reports it.
 
 The legacy `dsh` picker entry remains available for compatibility. Selecting it also routes each Prime turn into an in-process DeepSeek Harness tree. DSH owns the full agent loop, context, tools, skills, memory, subagents, and compaction. Prime only displays the streamed assistant text, reasoning, and tool activity.
 
@@ -35,6 +35,8 @@ Alpha.5 already mounts `web_search` and SSRF-guarded anonymous `web_fetch` in th
 A self-contained [Prime Agent package](https://github.com/PrimeIntellect-ai/prime-agent) that adds a **DeepSeek Harness inference-context shadow** without replacing Prime behavior, plus optional explicit delegation to the real [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) runtime.
 
 This is **not** a DeepSeek model-provider plugin. The Prime extension launches `dsh --profile acp`, drives it with standard ACP, and routes DSH inference through the model currently selected in Prime. The included DSH bundle uses DSH's stock ACP subagent provider to launch `prime-agent --mode acp` in the reverse direction. DeepSeek Harness remains responsible for its own agent loop, append-only session log, context projection, compaction, tools, skills, subagents, Cordis plugins, and optional memory plugins.
+
+**Modular by default.** Installing this package changes nothing until you explicitly use it: transparent wrapping, durable compaction, and context shadowing are opt-in, and no global state (kernel modules, providers, other packages’ tools) is patched or wrapped. Other plugins keep working exactly as if this package were not installed.
 
 > DeepSeek Harness is currently a developer preview and warns that breaking changes are expected. This package pins the DSH runtime and ACP SDK versions exactly.
 
@@ -73,7 +75,7 @@ The tool returns a DSH session ID. On the same Prime branch, later calls automat
 
 ## Transparent inference-context integration
 
-Transparent provider wrapping is active by default. Ordinary provider IDs and model picker entries remain unchanged, while DSH owns the model-facing loop, context, tools, skills, sessions, and compaction. Set `PI_DSH_TRANSPARENT=0` to retain native Prime dispatch. The inference-context projection experiment remains in **shadow mode**. The extension observes final provider payloads, fingerprints request envelopes, measures stable-prefix eligibility, and compares it with actual provider-reported `cacheRead`/`cacheWrite`. It does not mutate context yet.
+Transparent provider wrapping is off by default; opt in with `/dsh-transparent on`, `"transparent": true`, or `PI_DSH_TRANSPARENT=1`. Ordinary provider IDs and model picker entries remain unchanged, while DSH owns the model-facing loop, context, tools, skills, sessions, and compaction. Set `PI_DSH_TRANSPARENT=0` to retain native Prime dispatch. The inference-context projection experiment remains in **shadow mode**. The extension observes final provider payloads, fingerprints request envelopes, measures stable-prefix eligibility, and compares it with actual provider-reported `cacheRead`/`cacheWrite`. It does not mutate context yet.
 
 The detailed shadow-first implementation and rollout plan is in [`docs/inference-context-plan.md`](docs/inference-context-plan.md). Context projection and pruning will only enter the provider path after differential tests prove Prime behavioral parity and fail-open recovery.
 

@@ -31,7 +31,7 @@ export function loadConfig(): ResolvedConfig {
     poolMax: envPoolMax ?? fromFile.parsed.poolMax ?? DEFAULT_POOL_MAX,
     poolIdleTtlMs: envPoolIdle ?? fromFile.parsed.poolIdleTtlMs ?? DEFAULT_POOL_IDLE_TTL_MS,
     fullAccess: envFullAccess ?? fromFile.parsed.fullAccess ?? false,
-    transparent: envTransparent ?? fromFile.parsed.transparent ?? true,
+    transparent: envTransparent ?? fromFile.parsed.transparent ?? false,
     mcpServers: mergeMcpServers(fromFile.parsed.mcpServers ?? [], readPrimeMcpServers()),
     persistentTerminal: fromFile.parsed.persistentTerminal ?? false,
     model: readDshDefaultModel(),

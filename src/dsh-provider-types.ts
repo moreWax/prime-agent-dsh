@@ -34,7 +34,9 @@ export interface ConfigFile {
   poolIdleTtlMs?: number;
   /** Explicitly disable the workspace sandbox and all approval prompts. */
   fullAccess?: boolean;
-  /** Wrap normal Prime providers with DSH. Defaults to true. */
+  /** Wrap normal Prime providers with DSH. Opt-in only; defaults to false so
+   * installing this package changes nothing for other providers, tools, or
+   * packages. */
   transparent?: boolean;
   /** Operator-declared servers mounted in each pooled Agent scope. */
   mcpServers?: McpServerConfig[];

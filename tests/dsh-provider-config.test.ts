@@ -51,3 +51,27 @@ test("explicit dsh.json MCP entries win over inherited Prime entries per serverN
     { transport: "stdio", serverName: "arxiv", command: "/bin/python" },
   ]);
 });
+
+
+test("modular default: transparent provider wrapping stays off unless opted in", async () => {
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const home = mkdtempSync(join(tmpdir(), "pi-dsh-config-"));
+  const saved = { ...process.env };
+  process.env.PRIME_AGENT_HOME = home;
+  delete process.env.PI_DSH_TRANSPARENT;
+  try {
+    const fresh = (await import(`../src/dsh-provider-config.js?case=${Date.now()}`)) as {
+      loadConfig: () => { transparent: boolean };
+    };
+    assert.equal(fresh.loadConfig().transparent, false);
+    process.env.PI_DSH_TRANSPARENT = "1";
+    assert.equal(fresh.loadConfig().transparent, true);
+    process.env.PI_DSH_TRANSPARENT = "0";
+    assert.equal(fresh.loadConfig().transparent, false);
+  } finally {
+    for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+    for (const [key, value] of Object.entries(saved)) process.env[key] = value;
+  }
+});

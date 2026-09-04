@@ -90,8 +90,11 @@ export class TransparentProviderController {
 
     // A prior extension instance can still own these API slots after /reload.
     // Unregistering first makes Prime rebuild the native registry and reapply
-    // other dynamic providers. Capture only after that recovery, never a wrapper.
+    // other dynamic providers. When wrapping is disabled (the modular default)
+    // the controller stops here: nothing is captured, wrapped, or thrown at —
+    // inert for every other provider, tool, and package.
     for (const api of this.knownApis) this.pi.unregisterProvider(registrationName(api));
+    if (!this.enabled) return;
     this.nativeStreams.clear();
     for (const api of this.knownApis) {
       const native = this.options.getNativeStream?.(api)
@@ -99,7 +102,6 @@ export class TransparentProviderController {
       if (!native) throw new Error(`Cannot capture native streamSimple for API ${api}`);
       this.nativeStreams.set(api, native);
     }
-    if (!this.enabled) return;
 
     for (const api of this.knownApis) {
       const config: ProviderConfig = {
