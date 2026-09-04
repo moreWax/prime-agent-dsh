@@ -37,7 +37,16 @@ function reasoningEfforts(model: Model<Api>): false | Record<string, string | nu
   if (!model.reasoning) return false;
   const map = model.thinkingLevelMap;
   if (!map) return false;
-  return Object.fromEntries(Object.entries(map).filter(([, value]) => value === null || typeof value === "string"));
+  const efforts: Record<string, string | null> = {};
+  for (const [name, wire] of Object.entries(map)) {
+    if (name === "off") { efforts[name] = null; continue; }          // only "off" may carry no wire value
+    if (typeof wire === "string" && wire.trim().length > 0) {        // every other level needs a real wire value
+      efforts[name] = wire;
+    }
+    // Levels with an empty wire value are undispatchable on the DSH side
+    // (llm-pi-ai rejects them); drop them so the model still routes.
+  }
+  return Object.keys(efforts).length > 0 ? efforts : false;
 }
 function safeHeaders(headers: Record<string, string> | undefined): Record<string, string> {
   const result: Record<string, string> = {};

@@ -49,3 +49,19 @@ test("route identity includes native model route but excludes credentials", asyn
     }
   } finally { await Promise.all([first.proxy.close(), same.proxy.close(), switched.proxy.close()]); }
 });
+
+
+test("reasoning efforts follow Prime's model map and drop undispatchable wire values", async () => {
+  const home = "/tmp/prime-agent-dsh-reasoning-route-test"; await rm(home, { recursive: true, force: true });
+  const reasoningModel = { ...model, reasoning: true,
+    thinkingLevelMap: { off: null, minimal: "", medium: "medium", high: "high" } } as Model<Api>;
+  const route = await preparePrimeRoute({ model: reasoningModel, auth: {} }, home);
+  try {
+    const patchText = await readFile(route.modelPatch, "utf8");
+    // "off" and concrete wire values survive; the empty-wire "minimal" level is dropped
+    assert.doesNotMatch(patchText, /"minimal"/);
+    assert.match(patchText, /"off"/);
+    assert.match(patchText, /"medium"/);
+    assert.match(patchText, /"high"/);
+  } finally { await route.proxy.close(); }
+});
