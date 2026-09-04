@@ -170,3 +170,7 @@ MIT. DeepSeek Harness and its transitive dependencies retain their own licenses 
 ## Upstream prior art
 
 The selectable pooled DSH provider is adapted from [fatwang2/pi-dsh](https://github.com/fatwang2/pi-dsh) under the MIT License. See `THIRD_PARTY_NOTICES.md`.
+
+## Live provider validation
+
+The pooled provider has been validated against Prime Agent 0.9.1 and DSH 0.1.2-alpha.5. Selecting `dsh/dsh-harness` after a native Prime model routes DSH inference through that Prime model while DSH owns the agent loop and context. A live test streamed reasoning/text, used DSH's own `read` tool without emitting a Prime tool call, and recalled the tool result on the next turn from the same DSH session.
