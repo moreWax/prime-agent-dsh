@@ -11,7 +11,7 @@ import { CONFIG_PATH_FOR_DIAGNOSTICS, loadConfig as loadProviderConfig } from ".
 import { bindSessionRuntime, createInstanceRuntime, registerProvider } from "../src/dsh-provider.js";
 import { TransparentProviderController } from "../src/transparent-provider.js";
 import { createPrimeUserQuestionAnswerer, rejectHeadlessUserQuestion } from "../src/prime-user-questions.js";
-import { formatDshCapabilities } from "../src/dsh-capabilities.js";
+import { dshCapabilityRegistry, formatDshCapabilities } from "../src/dsh-capabilities.js";
 
 interface DshDetails {
   sessionId: string;
@@ -295,7 +295,8 @@ DSH session: ${result.sessionId}` }],
     description: "Show evidence-backed capabilities of the embedded DSH base profile",
     handler: async (_args, ctx) => {
       await Promise.resolve();
-      ctx.ui.notify(formatDshCapabilities(), "info");
+      const capabilitiesConfig = loadProviderConfig();
+      ctx.ui.notify(formatDshCapabilities(dshCapabilityRegistry(capabilitiesConfig)), "info");
     },
   });
 

@@ -50,8 +50,27 @@ export const DSH_CAPABILITIES = [
   { id: "cache", label: "Cache", status: "verified", summary: "Cold restart restores persisted DSH sessions, and provider-reported cache reads are preserved across repeated-prefix turns.", evidence: [row("session-projection-cache", "versioned session projection checkpoints are persisted"), path("tests/live-provider.mjs", "separate-process resume, route isolation, stable prefix, and provider-returned cached-token accounting are exercised"), limit("session-projection-cache", "projection persistence and upstream model prompt caching are distinct mechanisms")] },
 ] as const satisfies readonly DshCapability[];
 
-export function dshCapabilityRegistry(): readonly DshCapability[] {
-  return DSH_CAPABILITIES;
+export interface DshOptionalCapabilityConfig {
+  mcpServers?: readonly unknown[];
+  persistentTerminal?: boolean;
+}
+
+export function dshCapabilityRegistry(config?: DshOptionalCapabilityConfig): readonly DshCapability[] {
+  return DSH_CAPABILITIES.map((capability): DshCapability => {
+    if (capability.id === "mcp" && (config?.mcpServers?.length ?? 0) > 0) return {
+      ...capability,
+      status: "loaded",
+      summary: "Operator-declared MCP clients are mounted in the pooled Agent scope; runtime server behavior is not probed by this report.",
+      evidence: [path("src/dsh-provider-host.ts", "validated operator-only servers mount with failOnStartupError"), limit("src/dsh-provider-config.ts", "no model-facing server manager; configuration changes isolate pool identity")],
+    };
+    if (capability.id === "terminals" && config?.persistentTerminal === true) return {
+      ...capability,
+      status: "loaded",
+      summary: "The optional persistent Bash backend and model tool are mounted; runtime PTY behavior is not probed by this report.",
+      evidence: [path("src/dsh-provider-host.ts", "terminal backend mounts per tree and persistent Bash tool per Agent"), limit("src/dsh-provider-config.ts", "operator opt-in; unsupported on Windows")],
+    };
+    return capability;
+  });
 }
 
 export function formatDshCapabilities(capabilities: readonly DshCapability[] = DSH_CAPABILITIES): string {

@@ -7,7 +7,7 @@ const expected = ["images", "questions", "mcp", "goals", "plan", "compaction", "
 test("registry covers the requested base capability surface exactly", () => {
   assert.deepEqual(DSH_CAPABILITIES.map((item) => item.id), expected);
   assert.equal(new Set(DSH_CAPABILITIES.map((item) => item.id)).size, expected.length);
-  assert.equal(dshCapabilityRegistry(), DSH_CAPABILITIES);
+  assert.deepEqual(dshCapabilityRegistry(), DSH_CAPABILITIES);
 });
 
 test("every claim has typed status and concrete evidence", () => {
@@ -40,4 +40,14 @@ test("human report includes status totals, each capability, and probe caveat", (
   assert.match(output, /verified=4, loaded=5, degraded=1, unavailable=2/);
   for (const item of DSH_CAPABILITIES) assert.match(output, new RegExp(`^${item.label}: ${item.status}`, "m"));
   assert.match(output, /does not probe credentials or external services/);
+});
+
+
+test("optional operator composition changes MCP and terminal claims without claiming verification", () => {
+  const configured = dshCapabilityRegistry({ mcpServers: [{}], persistentTerminal: true });
+  const byId = Object.fromEntries(configured.map((item) => [item.id, item]));
+  assert.equal(byId.mcp?.status, "loaded");
+  assert.equal(byId.terminals?.status, "loaded");
+  assert.match(byId.mcp?.summary ?? "", /not probed/);
+  assert.match(byId.terminals?.summary ?? "", /not probed/);
 });
