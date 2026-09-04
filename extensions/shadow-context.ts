@@ -18,6 +18,17 @@ interface MirrorCounters {
 }
 interface SyncResult { revision: number; messageCount: number; mode: "append" | "noop" | "rebuild"; }
 interface ProjectResult { messages: Message[]; }
+export type ShadowMode = "off" | "on";
+export interface ShadowContextOptions { mode?: ShadowMode; maxMessages?: number; maxBytes?: number; }
+export function shadowOptions(env: NodeJS.ProcessEnv = process.env): Required<ShadowContextOptions> {
+  const rawMode = env.PRIME_DSH_SHADOW_MODE ?? "off";
+  if (rawMode !== "off" && rawMode !== "on") throw new Error("PRIME_DSH_SHADOW_MODE must be off or on");
+  const positive = (value: string | undefined, fallback: number): number => {
+    const parsed = value === undefined ? fallback : Number(value);
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+  };
+  return { mode: rawMode, maxMessages: positive(env.PRIME_DSH_SHADOW_MAX_MESSAGES, 500), maxBytes: positive(env.PRIME_DSH_SHADOW_MAX_BYTES, 4 * 1024 * 1024) };
+}
 
 type JsonObject = Record<string, unknown>;
 const isObject = (value: unknown): value is JsonObject => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -83,22 +94,28 @@ export class ShadowMirrorController {
 /** Registers passive observers and owns their command-facing presentation. */
 export class ShadowContextExtension {
   readonly telemetry: ShadowContextTelemetry;
-  readonly mirror: ShadowMirrorController;
+  readonly mirror: ShadowMirrorController | undefined;
 
-  constructor(private readonly pi: ExtensionAPI, telemetry = new ShadowContextTelemetry(), mirror = new ShadowMirrorController()) {
+  private readonly options: Required<ShadowContextOptions>;
+  private boundedSkips = 0;
+  constructor(private readonly pi: ExtensionAPI, telemetry = new ShadowContextTelemetry(), mirror?: ShadowMirrorController, options: ShadowContextOptions = shadowOptions()) {
     this.telemetry = telemetry;
-    this.mirror = mirror;
+    this.options = { mode: options.mode ?? "off", maxMessages: options.maxMessages ?? 500, maxBytes: options.maxBytes ?? 4 * 1024 * 1024 };
+    this.mirror = this.options.mode === "on" ? (mirror ?? new ShadowMirrorController()) : undefined;
   }
 
   register(): ShadowContextTelemetry {
-    this.pi.on("context", (event, ctx) => {
-      const here = location(ctx);
-      this.telemetry.observe("context", event.messages, here);
-      void this.mirror.observe(event.messages, here);
-    });
-    this.pi.on("before_provider_request", (event, ctx) => {
-      this.telemetry.observe("before_provider_request", event.payload, location(ctx));
-    });
+    if (this.options.mode === "on") {
+      this.pi.on("context", (event, ctx) => {
+        const here = location(ctx);
+        if (event.messages.length > this.options.maxMessages || Buffer.byteLength(stableJson(event.messages)) > this.options.maxBytes) { this.boundedSkips++; return; }
+        this.telemetry.observe("context", event.messages, here);
+        if (this.mirror) void this.mirror.observe(event.messages, here);
+      });
+      this.pi.on("before_provider_request", (event, ctx) => {
+        this.telemetry.observe("before_provider_request", event.payload, location(ctx));
+      });
+    }
     this.registerStatusCommand();
     this.registerTraceCommand();
     return this.telemetry;
@@ -110,12 +127,14 @@ export class ShadowContextExtension {
       handler: async (_args, ctx) => {
         await Promise.resolve();
         const here = location(ctx);
+        if (this.options.mode === "off") { ctx.ui.notify("DSH context shadow is off (normal Prime path). Set PRIME_DSH_SHADOW_MODE=on and reload to enable diagnostics.", "info"); return; }
         const status = this.telemetry.status(here.sessionId, here.branchId) ?? this.telemetry.status(here.sessionId);
         if (!status) { ctx.ui.notify(`DSH context shadow: no observations for session ${here.sessionId}`, "info"); return; }
-        const c = this.mirror.counters;
+        const c = this.mirror?.counters ?? { syncs: 0, skips: 0, errors: 0, appends: 0, noops: 0, rebuilds: 0 };
         ctx.ui.notify(`DSH context shadow session=${status.sessionId} branch=${status.branchId} observations=${status.observations} errors=${status.errors}
 context ${metric(status.context)}
 provider ${metric(status.provider)}
+DSH mode=${this.options.mode} bounded-skips=${this.boundedSkips}
 DSH mirror syncs=${c.syncs} append=${c.appends} noop=${c.noops} rebuild=${c.rebuilds} skips=${c.skips} errors=${c.errors}`, status.errors || c.errors ? "warning" : "info");
       },
     });
