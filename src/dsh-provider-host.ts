@@ -18,6 +18,7 @@ import type {} from "@deepseek-ai/dsh-session-persistence";
 import type { ApprovalOutcome, ApprovalRequest } from "@deepseek-ai/dsh-user-approval";
 import { createPrivateRootConfig } from "./dsh-provider-security.js";
 import { BusyLruPool, type PoolEntry } from "./dsh-agent-pool.js";
+import type { PreparedPrimeRoute } from "./model-route.js";
 
 const require = createRequire(import.meta.url);
 
@@ -44,6 +45,7 @@ export interface AgentEntry extends PoolEntry {
   agent: Agent;
   handle: AgentHandle;
   fullAccess: boolean;
+  route: PreparedPrimeRoute;
   /** Number of acquired or running turns. Busy entries cannot expire or be evicted. */
   activeUses: number;
   /** Serializes turns per agent (DSH runs one turn at a time). */
@@ -74,9 +76,10 @@ async function canonicalCwd(cwd: string): Promise<string> {
   }
 }
 
-async function bootTree(workspaceRoot: string, fullAccess: boolean): Promise<Context> {
+async function bootTree(workspaceRoot: string, fullAccess: boolean, route: PreparedPrimeRoute): Promise<Context> {
   const basePatchPath = require.resolve("@deepseek-ai/dsh-base/cordis.patch.yml");
   const patches = loadOverlayPatches("prime-agent-dsh", basePatchPath);
+  patches.push(...loadOverlayPatches("prime-agent-dsh-route", route.modelPatch));
   patches.push({ id: "hmr", disabled: true });
   patches.push({
     id: "sandbox-policy",
@@ -84,6 +87,9 @@ async function bootTree(workspaceRoot: string, fullAccess: boolean): Promise<Con
   });
   patches.push({ id: "approval", config: { policy: fullAccess ? "never" : "ask" } });
 
+  // llm-pi-ai resolves apiKeyEnv at request time. The value is an unprivileged,
+  // loopback-only capability and is never included in a patch or session log.
+  for (const [name, value] of Object.entries(route.env)) process.env[name] = value;
   const root = createPrivateRootConfig();
   let ctx: Context;
   try {
@@ -108,8 +114,8 @@ async function bootTree(workspaceRoot: string, fullAccess: boolean): Promise<Con
   return ctx;
 }
 
-function getTree(workspaceRoot: string, fullAccess = false): Promise<Context> {
-  const treeKey = `${fullAccess ? "full" : "safe"}\0${workspaceRoot}`;
+function getTree(workspaceRoot: string, fullAccess: boolean, route: PreparedPrimeRoute): Promise<Context> {
+  const treeKey = `${fullAccess ? "full" : "safe"}\0${workspaceRoot}\0${route.fingerprint}`;
   let state = trees.get(treeKey);
   if (!state) {
     state = {};
@@ -117,7 +123,7 @@ function getTree(workspaceRoot: string, fullAccess = false): Promise<Context> {
   }
   if (state.context) return Promise.resolve(state.context);
   if (!state.boot) {
-    state.boot = bootTree(workspaceRoot, fullAccess).catch((error: unknown) => {
+    state.boot = bootTree(workspaceRoot, fullAccess, route).catch((error: unknown) => {
       state.boot = undefined;
       throw error;
     });
@@ -134,7 +140,7 @@ function getTree(workspaceRoot: string, fullAccess = false): Promise<Context> {
 
 async function disposeAgent(entry: AgentEntry): Promise<void> {
   try {
-    const ctx = await getTree(entry.cwd, entry.fullAccess);
+    const ctx = await getTree(entry.cwd, entry.fullAccess, entry.route);
     await ctx.get("sessions")?.flush(entry.agent.session);
   } catch {
     // flush is best-effort
@@ -167,32 +173,32 @@ function deterministicSessionId(key: string): string {
 
 export interface AgentPoolOptions {
   cwd: string;
-  model?: { provider: string; model: string; reasoningEffort?: string };
+  route: PreparedPrimeRoute;
   poolMax: number;
   idleTtlMs: number;
   fullAccess: boolean;
   approvalAnswerer?: ApprovalAnswerer;
 }
 
+export function agentPoolKey(cwd: string, sessionKey: string, fullAccess: boolean, routeFingerprint: string): string {
+  return `${fullAccess ? "full" : "safe"}\0${cwd}\0${routeFingerprint}\0${sessionKey}`;
+}
+
 export async function getOrCreateAgent(key: string, opts: AgentPoolOptions): Promise<AgentEntry> {
   ensureSweeper();
   const cwd = await canonicalCwd(opts.cwd);
-  const isolatedKey = `${opts.fullAccess ? "full" : "safe"}\0${cwd}\0${key}`;
+  const isolatedKey = agentPoolKey(cwd, key, opts.fullAccess, opts.route.fingerprint);
   const entry = await pool.acquire(isolatedKey, opts.poolMax, async () => {
-    const ctx = await getTree(cwd, opts.fullAccess);
+    const ctx = await getTree(cwd, opts.fullAccess, opts.route);
     const agents = ctx.get("agents");
     const defaultModel = ctx.get("agentDefaultModel");
     const persistence = ctx.get("sessionPersistence");
     if (!agents || !defaultModel || !persistence) {
       throw new Error("[pi-dsh] dsh tree is missing agents/agentDefaultModel/sessionPersistence");
     }
-    const selection = defaultModel.currentSelection();
     const sid = deterministicSessionId(isolatedKey);
-    const target = opts.model?.provider && opts.model.model
-      ? { provider: opts.model.provider, model: opts.model.model,
-          ...(opts.model.reasoningEffort ? { reasoningEffort: ReasoningEffortId(opts.model.reasoningEffort) } : {}) }
-      : { provider: selection.provider, model: selection.model,
-          ...(selection.reasoningEffort ? { reasoningEffort: selection.reasoningEffort } : {}) };
+    const target = { provider: opts.route.provider, model: opts.route.model,
+      ...(opts.route.reasoningEffort ? { reasoningEffort: ReasoningEffortId(opts.route.reasoningEffort) } : {}) };
     const persisted = await persistence.list()
       .then((headers) => headers.some((header) => header.id === sid))
       .catch(() => false);
@@ -209,7 +215,7 @@ export async function getOrCreateAgent(key: string, opts: AgentPoolOptions): Pro
     return {
       key: isolatedKey, cwd, sessionId: sid, lastUsedAt: Date.now(),
       idleTtlMs: opts.idleTtlMs, activeUses: 0, fullAccess: opts.fullAccess,
-      agent: handle.agent, handle, turnLock: Promise.resolve(),
+      agent: handle.agent, handle, route: opts.route, turnLock: Promise.resolve(),
     };
   });
   if (opts.approvalAnswerer) approvalAnswerers.set(entry.agent, opts.approvalAnswerer);
@@ -271,7 +277,7 @@ export async function runTurn(
       if (signal) signal.removeEventListener("abort", abortHandler);
       // Persist this turn so cross-process resume keeps the full history.
       try {
-        const ctx = await getTree(entry.cwd, entry.fullAccess);
+        const ctx = await getTree(entry.cwd, entry.fullAccess, entry.route);
         await ctx.get("sessions")?.flush(agent.session);
       } catch {
         // flush is best-effort

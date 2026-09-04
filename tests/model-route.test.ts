@@ -18,7 +18,9 @@ test("Prime inference proxy keeps credentials out of DSH patch and injects them 
   try {
     const patch = await readFile(route.patch, "utf8");
     assert.doesNotMatch(patch, /upstream-secret/);
-    assert.match(patch, /prime-selected/);
+    assert.match(patch, /prime-selected-/);
+    assert.doesNotMatch(await readFile(route.modelPatch, "utf8"), /acpAppStartup/);
+    assert.deepEqual(Object.keys(route.env), [`PRIME_DSH_PROXY_TOKEN_${route.fingerprint.toUpperCase()}`]);
     const response = await fetch(`${route.proxy.baseUrl}/v1/models`, { headers: { authorization: `Bearer ${route.proxy.token}` } });
     assert.equal(response.status, 200);
     assert.equal(authorization, "Bearer upstream-secret");
@@ -29,4 +31,21 @@ test("Prime inference proxy keeps credentials out of DSH patch and injects them 
 
 test("unsupported Prime model APIs fail instead of being relabeled", async () => {
   await assert.rejects(preparePrimeRoute({ model: { ...model, api: "google-generative-ai" }, auth: {} }, "/tmp/prime-agent-dsh-bad-route"), /cannot be represented/);
+});
+
+
+test("route identity includes native model route but excludes credentials", async () => {
+  const home = "/tmp/prime-agent-dsh-route-identity-test"; await rm(home, { recursive: true, force: true });
+  const first = await preparePrimeRoute({ model, auth: { apiKey: "first-secret" } }, home);
+  const same = await preparePrimeRoute({ model, auth: { apiKey: "second-secret" } }, home);
+  const switched = await preparePrimeRoute({ model: { ...model, provider: "other-prime-provider" }, auth: {} }, home);
+  try {
+    assert.equal(first.fingerprint, same.fingerprint);
+    assert.notEqual(first.fingerprint, switched.fingerprint);
+    assert.notEqual(first.provider, switched.provider);
+    for (const route of [first, same, switched]) {
+      const persisted = (await readFile(route.patch, "utf8")) + (await readFile(route.modelPatch, "utf8"));
+      assert.doesNotMatch(persisted, /first-secret|second-secret/);
+    }
+  } finally { await Promise.all([first.proxy.close(), same.proxy.close(), switched.proxy.close()]); }
 });

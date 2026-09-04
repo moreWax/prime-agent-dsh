@@ -12,6 +12,7 @@ import {
 import { buildModels, PROVIDER_API, PROVIDER_BASE_URL, PROVIDER_ID } from "./dsh-provider-catalog.js";
 import { classifyTurnEnd, textBlockKey, thinkingBlockKey, type TurnOutcome } from "./dsh-provider-turn-reasons.js";
 import type { ResolvedConfig } from "./dsh-provider-types.js";
+import type { PreparedPrimeRoute } from "./model-route.js";
 import {
   destroyAgent,
   getOrCreateAgent,
@@ -30,6 +31,8 @@ export interface InstanceRuntime {
   /** Stable identity of the Pi CONVERSATION (session id, survives resume). */
   sessionKey: string;
   approvalAnswerer?: (request: { toolName: string; reason?: string }) => Promise<boolean>;
+  /** Resolves the last native Prime selection. It may change between DSH turns. */
+  resolveRoute?: () => Promise<PreparedPrimeRoute>;
 }
 
 export function createInstanceRuntime(): InstanceRuntime {
@@ -128,9 +131,11 @@ function streamDshPool(
         );
       }
 
+      const route = await runtime.resolveRoute?.();
+      if (!route) throw new Error("Select a native Prime model before using the dsh provider");
       const entry = await getOrCreateAgent(runtime.sessionKey, {
         cwd: runtime.cwd,
-        model: cfg.model,
+        route,
         poolMax: cfg.poolMax,
         idleTtlMs: cfg.poolIdleTtlMs,
         fullAccess: cfg.fullAccess,

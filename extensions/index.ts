@@ -4,7 +4,7 @@ import { Type } from "typebox";
 import { loadConfig } from "../src/config.js";
 import { notificationSummary } from "../src/notifications.js";
 import { RuntimeManager } from "../src/runtime-manager.js";
-import { PrimeRouteRegistry } from "../src/model-route.js";
+import { PrimeRouteRegistry, type PreparedPrimeRoute } from "../src/model-route.js";
 import { registerShadowContextTelemetry } from "./shadow-context.js";
 import { DurableCompactionController, loadCompactionPlannerConfig } from "../src/compaction.js";
 import { CONFIG_PATH_FOR_DIAGNOSTICS, loadConfig as loadProviderConfig } from "../src/dsh-provider-config.js";
@@ -71,10 +71,52 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
   // Prime only supplies the latest user turn and renders DSH's event stream.
   const providerConfig = loadProviderConfig();
   const providerRuntime = createInstanceRuntime();
+  let lastNativeModel: Model<Api> | undefined;
+  let lastThinkingLevel: ExtensionContext["thinkingLevel"];
+  let preparedRoute: PreparedPrimeRoute | undefined;
+  const selectNative = (model: Model<Api> | undefined): void => {
+    if (model?.provider === "dsh") return;
+    if (model) lastNativeModel = model;
+    preparedRoute = undefined;
+  };
+  const resolveProviderRoute = async (ctx: ExtensionContext): Promise<PreparedPrimeRoute> => {
+    const model = lastNativeModel;
+    if (!model) throw new Error("Select a native Prime model before using the dsh provider");
+    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+    if (!auth.ok) throw new Error(`Could not resolve Prime model authentication: ${auth.error}`);
+    const headers = auth.headers
+      ? Object.fromEntries(Object.entries(auth.headers).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
+      : undefined;
+    const dshHome = loadConfig(ctx.cwd, { dshBin: pi.getFlag("dsh-bin") as string | undefined,
+      dshHome: pi.getFlag("dsh-home") as string | undefined }).dshHome;
+    preparedRoute = await routes.prepare({ model, auth: { apiKey: auth.apiKey, headers }, thinkingLevel: lastThinkingLevel }, dshHome);
+    return preparedRoute;
+  };
   registerProvider(pi, providerConfig, providerRuntime);
+  pi.on("model_select", (event) => {
+    selectNative(event.model as Model<Api>);
+  });
+  pi.on("thinking_level_select", (event) => {
+    lastThinkingLevel = event.level;
+    preparedRoute = undefined;
+  });
   pi.on("session_start", async (_event, ctx) => {
     await Promise.resolve();
     providerRuntime.cwd = ctx.cwd;
+    selectNative(ctx.model as Model<Api> | undefined);
+    if (!lastNativeModel) {
+      // A resumed session can start while `dsh` is selected. Recover the most
+      // recent native selection from Prime's branch without copying any auth.
+      const branch = ctx.sessionManager.getBranch();
+      for (let index = branch.length - 1; index >= 0; index--) {
+        const entry = branch[index] as { type?: string; provider?: string; modelId?: string } | undefined;
+        if (entry?.type !== "model_change" || !entry.provider || !entry.modelId || entry.provider === "dsh") continue;
+        const restored = ctx.modelRegistry.find(entry.provider, entry.modelId);
+        if (restored) { selectNative(restored); break; }
+      }
+    }
+    lastThinkingLevel = ctx.thinkingLevel;
+    providerRuntime.resolveRoute = () => resolveProviderRoute(ctx);
     const sessionId = ctx.sessionManager.getSessionId?.() ?? ctx.cwd;
     providerRuntime.sessionKey = sessionId;
     providerRuntime.approvalAnswerer = ctx.hasUI

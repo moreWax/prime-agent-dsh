@@ -53,3 +53,10 @@ test("release and touch update activity timestamps", async () => {
   assert.equal(value.activeUses, 0);
   assert.equal(value.lastUsedAt, 9);
 });
+
+
+test("pooled DSH identities are isolated by native Prime route", async () => {
+  const { agentPoolKey } = await import("../src/dsh-provider-host.js");
+  assert.notEqual(agentPoolKey("/work", "session", false, "route-a"), agentPoolKey("/work", "session", false, "route-b"));
+  assert.equal(agentPoolKey("/work", "session", false, "route-a"), agentPoolKey("/work", "session", false, "route-a"));
+});

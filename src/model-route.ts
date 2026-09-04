@@ -14,7 +14,19 @@ export interface PrimeModelRoute {
   auth: ResolvedPrimeAuth;
   thinkingLevel?: string;
 }
-export interface PreparedPrimeRoute { provider: string; model: string; patch: string; env: NodeJS.ProcessEnv; proxy: PrimeInferenceProxy; fingerprint: string; }
+export interface PreparedPrimeRoute {
+  provider: string;
+  model: string;
+  reasoningEffort?: string;
+  /** ACP profile patch used by one-shot/delegated DSH. */
+  patch: string;
+  /** In-process tree patch. Contains only the llm-pi-ai route. */
+  modelPatch: string;
+  /** Capability-only environment values. Never write these into DSH config or persistence. */
+  env: Readonly<Record<string, string>>;
+  proxy: PrimeInferenceProxy;
+  fingerprint: string;
+}
 
 function filteredCompat(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
@@ -98,17 +110,29 @@ export async function preparePrimeRoute(route: PrimeModelRoute, dshHome: string)
     input: route.model.input, compat: route.model.compat, thinkingLevel: route.thinkingLevel })).digest("hex").slice(0, 16);
   const dir = join(dshHome, "prime-bridge"); await mkdir(dir, { recursive: true, mode: 0o700 });
   const patch = join(dir, `model-${fingerprint}.patch.yml`);
-  const provider = "prime-selected";
+  const provider = `prime-selected-${fingerprint}`;
+  const apiKeyEnv = `PRIME_DSH_PROXY_TOKEN_${fingerprint.toUpperCase()}`;
   const compat = filteredCompat(route.model.compat);
   const profile = {
-    displayName: `Prime: ${route.model.name}`, apiKeyEnv: "PRIME_DSH_PROXY_TOKEN", api: route.model.api,
+    displayName: `Prime: ${route.model.name}`, apiKeyEnv, api: route.model.api,
     baseURL: proxy.baseUrl, models: [{ id: route.model.id, name: route.model.name, contextWindow: route.model.contextWindow,
       maxTokens: route.model.maxTokens, input: route.model.input, reasoningEfforts: reasoningEfforts(route.model), ...(compat ? { compat } : {}) }],
     ...(compat ? { compat } : {}),
   };
-  const text = `- id: llm-pi-ai\n  name: '@deepseek-ai/dsh-llm-pi-ai'\n  config: ${JSON.stringify({ providers: { [provider]: profile } })}\n- id: acp\n  name: '@deepseek-ai/dsh-acp'\n  inject: [acpAppStartup]\n  config: ${JSON.stringify({ provider, model: route.model.id })}\n`;
+  const modelText = `- id: llm-pi-ai
+  name: '@deepseek-ai/dsh-llm-pi-ai'
+  config: ${JSON.stringify({ providers: { [provider]: profile } })}
+`;
+  const modelPatch = join(dir, `model-${fingerprint}.llm.patch.yml`);
+  await writeFile(modelPatch, modelText, { mode: 0o600 });
+  const text = `${modelText}- id: acp
+  name: '@deepseek-ai/dsh-acp'
+  inject: [acpAppStartup]
+  config: ${JSON.stringify({ provider, model: route.model.id })}
+`;
   await writeFile(patch, text, { mode: 0o600 });
-  return { provider, model: route.model.id, patch, env: { PRIME_DSH_PROXY_TOKEN: proxy.token }, proxy, fingerprint };
+  return { provider, model: route.model.id, ...(route.thinkingLevel ? { reasoningEffort: route.thinkingLevel } : {}),
+    patch, modelPatch, env: { [apiKeyEnv]: proxy.token }, proxy, fingerprint };
 }
 
 export class PrimeRouteRegistry {
