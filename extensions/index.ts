@@ -258,7 +258,17 @@ DSH session: ${result.sessionId}` }],
       const sessionId = sessionFor(ctx);
       ctx.ui.setStatus("deepseek-harness", "DSH running");
       try {
-        const result = await manager.run(args, config, { cwd: ctx.cwd, sessionId });
+        const result = await manager.run(args, config, {
+          cwd: ctx.cwd,
+          sessionId,
+          onPermission: async (title, choices) => {
+            if (!ctx.hasUI) return undefined;
+            const labels = choices.map((choice) => `${choice.allow ? "Allow" : "Reject"}: ${choice.label}`);
+            const selected = await ctx.ui.select(title, labels);
+            const index = selected === undefined ? -1 : labels.indexOf(selected);
+            return index >= 0 ? choices[index]?.id : undefined;
+          },
+        });
         pi.sendMessage({ customType: "deepseek-harness", content: result.text || "DeepSeek Harness completed without text.", display: true,
           details: { sessionId: result.sessionId, state: "completed", profile: config.profile, provider: config.provider, model: config.model } satisfies DshDetails },
           { deliverAs: "nextTurn" });
