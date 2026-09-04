@@ -102,6 +102,29 @@ Memory behavior depends on the selected DSH profile and installed DSH plugins. T
 - ACP `session/prompt` settles after the DSH agent reaches its defined terminal boundary; calls are serialized conservatively by the bridge.
 - `stdout` belongs exclusively to ACP JSON-RPC. Never install a DSH plugin that writes arbitrary output to stdout in the ACP profile.
 
+## Durable compaction planner (preview)
+
+The Prime extension can shadow or activate a DSH-style compaction plan at Prime's
+`session_before_compact` hook. This is deliberately the **only** mutation seam:
+the normal `context` and provider-request observers remain passive. The planner
+keeps Prime's already balanced cut/retained tail, then applies DSH's deterministic
+Unicode-code-point head/marker/tail rule to oversized text tool results in the
+summarized region. Images and other rich blocks retain their relative order.
+
+The default is `off`. Opt in to diagnostics without changing durable history:
+
+```sh
+PRIME_DSH_COMPACTION_MODE=shadow prime-agent
+# or: prime-agent --dsh-compaction shadow
+```
+
+Use `active` only to authorize the validated plan. Prime's selected model, auth,
+cancellation signal, instructions, and durable `CompactionResult` commit path are
+still authoritative; planner or compactor errors fail open to native compaction.
+Budgets default to 8192/4096/1024 characters and can be overridden with
+`PRIME_DSH_PRUNE_THRESHOLD_CHARS`, `PRIME_DSH_PRUNE_HEAD_CHARS`, and
+`PRIME_DSH_PRUNE_TAIL_CHARS`.
+
 ## Development
 
 ```bash

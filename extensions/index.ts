@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { compact as compactPrime, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { loadConfig } from "../src/config.js";
@@ -6,6 +6,7 @@ import { notificationSummary } from "../src/notifications.js";
 import { RuntimeManager } from "../src/runtime-manager.js";
 import { PrimeRouteRegistry } from "../src/model-route.js";
 import { registerShadowContextTelemetry } from "./shadow-context.js";
+import { DurableCompactionController, loadCompactionPlannerConfig } from "../src/compaction.js";
 
 interface DshDetails {
   sessionId: string;
@@ -65,6 +66,22 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI) {
   let manager = new RuntimeManager();
   pi.registerFlag("dsh-bin", { type: "string", description: "Path to a compatible dsh executable" });
   pi.registerFlag("dsh-home", { type: "string", description: "Isolated DSH_HOME used by the bridge" });
+  pi.registerFlag("dsh-compaction", { type: "string", description: "DSH compaction planner: off, shadow, or active" });
+  const compactionController = new DurableCompactionController(
+    loadCompactionPlannerConfig(pi.getFlag("dsh-compaction") as string | undefined),
+    async (event, ctx, plan) => {
+      const model = ctx.model as Model<Api> | undefined;
+      if (!model) throw new Error("Prime Agent has no active model for compaction");
+      const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+      if (!auth.ok) throw new Error(`Could not resolve compaction model authentication: ${auth.error}`);
+      const headers = auth.headers
+        ? Object.fromEntries(Object.entries(auth.headers).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
+        : undefined;
+      return compactPrime(plan.preparation, model, auth.apiKey, headers, event.customInstructions, event.signal, ctx.thinkingLevel,
+        undefined, undefined, undefined, undefined, ctx.sessionManager.getSessionId());
+    },
+  );
+  compactionController.register(pi);
 
   pi.on("session_shutdown", async () => {
     await manager.closeAll();
