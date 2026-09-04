@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext, ProviderConfig } from "@earendil-works/pi-coding-agent";
 import * as PiAi from "@earendil-works/pi-ai";
-import type { Api, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessageEvent, AssistantMessageEventStream, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import type { ResolvedConfig } from "./dsh-provider-types.js";
 import { bindSessionRuntime, createInstanceRuntime, streamDsh, type InstanceRuntime } from "./dsh-provider.js";
 import { PrimeRouteRegistry } from "./model-route.js";
@@ -125,6 +126,80 @@ export class TransparentProviderController {
       const headers = auth.headers ? Object.fromEntries(Object.entries(auth.headers).filter((entry): entry is [string, string] => typeof entry[1] === "string")) : undefined;
       return this.routes.prepare({ model, auth: { apiKey: auth.apiKey, headers }, thinkingLevel: model.reasoning ? ctx.thinkingLevel : undefined }, this.options.dshHome(ctx));
     };
-    return streamDsh(model, context, options, this.cfg, this.runtime);
+    // DSH must never hold the session hostage: if its stream fails before
+    // producing any content, fall back to the native provider for this turn
+    // and disable DSH for the session with a visible notice.
+    const out = createAssistantMessageEventStream();
+    void this.pumpDshWithFallback(out, model, context, options, native);
+    return out;
+  }
+
+  private async pumpDshWithFallback(
+    out: AssistantMessageEventStream,
+    model: Model<Api>,
+    context: Parameters<StreamSimple>[1],
+    options: SimpleStreamOptions | undefined,
+    native: StreamSimple,
+  ): Promise<void> {
+    const dshStream = streamDsh(model, context, options, this.cfg, this.runtime);
+    let produced = false;
+    const fallback = async (): Promise<void> => {
+      this.enabled = false;
+      this.ctx?.ui?.notify?.(
+        "DSH inference failed this turn; fell back to the native provider and disabled DSH for this session (re-enable with /dsh-session on).",
+        "error",
+      );
+      try {
+        for await (const nativeEvent of native(model, context, options)) out.push(nativeEvent as AssistantMessageEvent);
+      } finally {
+        out.end();
+      }
+    };
+    try {
+      for await (const event of dshStream) {
+        if (!produced && event && typeof event === "object" && (event as { type?: unknown }).type === "error") {
+          await fallback();
+          return;
+        }
+        produced = true;
+        out.push(event as AssistantMessageEvent);
+      }
+      out.end();
+    } catch (error) {
+      if (!produced) await fallback();
+      else out.end();
+    }
+  }
+}
+
+interface StreamLike { [Symbol.asyncIterator](): AsyncIterator<unknown>; }
+
+/**
+ * Yields the DSH stream normally. If the stream errors or throws BEFORE any
+ * content event is produced, it switches to the fallback (native) stream and
+ * reports once. Content-first failures pass through untouched.
+ */
+export async function* fallbackOnDshFailure(
+  dshStream: StreamLike,
+  fallback: () => StreamLike,
+): AsyncGenerator<unknown, void, void> {
+  let produced = false;
+  try {
+    for await (const event of dshStream) {
+      if (!produced) {
+        if (event && typeof event === "object" && (event as { type?: unknown }).type === "error") {
+          for await (const nativeEvent of fallback()) yield nativeEvent;
+          return;
+        }
+        produced = true;
+      }
+      yield event;
+    }
+  } catch (error) {
+    if (!produced) {
+      for await (const nativeEvent of fallback()) yield nativeEvent;
+    } else {
+      throw error;
+    }
   }
 }

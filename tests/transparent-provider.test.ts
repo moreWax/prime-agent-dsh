@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Api, AssistantMessageEventStream, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, ProviderConfig } from "@earendil-works/pi-coding-agent";
-import { TransparentProviderController } from "../src/transparent-provider.js";
+import { fallbackOnDshFailure, TransparentProviderController } from "../src/transparent-provider.js";
 
 const model: Model<Api> = { id: "m", name: "Model", provider: "native", api: "openai-completions", baseUrl: "http://localhost", reasoning: false, input: ["text"], contextWindow: 1000, maxTokens: 100, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
 const cfg = { dshBin: "dsh", timeoutMs: 1, mode: "pool" as const, poolMax: 1, poolIdleTtlMs: 1, fullAccess: false, mcpServers: [], persistentTerminal: false };
@@ -41,6 +41,39 @@ test("Prime 0.9.1 registration uses (name, ProviderConfig) and keeps the catalog
   await f.handlers.get("session_start")?.[0]?.({} as never, f.ctx);
   assert.equal(f.unregistrations.length, 2);
   assert.equal(f.registrations.length, 2);
+});
+
+
+
+
+async function collect(iter: AsyncIterable<unknown>): Promise<unknown[]> {
+  const out: unknown[] = [];
+  for await (const item of iter) out.push(item);
+  return out;
+}
+interface StreamLike { [Symbol.asyncIterator](): AsyncIterator<unknown>; }
+async function* events(...items: unknown[]): AsyncGenerator<unknown> { yield* items; }
+
+test("fallback: DSH error before any content switches to the native stream", async () => {
+  const dsh = events({ type: "error", error: new Error("400 developer") });
+  const native = events({ type: "text", delta: "native reply" });
+  let fallbackUsed = false;
+  const out = await collect(fallbackOnDshFailure(dsh, () => { fallbackUsed = true; return native; }));
+  assert.equal(fallbackUsed, true);
+  assert.deepEqual(out, [{ type: "text", delta: "native reply" }]);
+});
+
+test("fallback: DSH content-first passes through untouched even on later errors", async () => {
+  const dsh = events({ type: "text", delta: "partial" }, { type: "error", error: new Error("late") });
+  const out = await collect(fallbackOnDshFailure(dsh, () => events({ type: "text", delta: "NOPE" })));
+  assert.deepEqual(out, [{ type: "text", delta: "partial" }, { type: "error", error: new Error("late") }]);
+});
+
+test("fallback: DSH stream that throws before content switches to native", async () => {
+  const dsh: StreamLike = { async *[Symbol.asyncIterator]() { throw new Error("boom"); } };
+  const native = events({ type: "text", delta: "saved" });
+  const out = await collect(fallbackOnDshFailure(dsh, () => native));
+  assert.deepEqual(out, [{ type: "text", delta: "saved" }]);
 });
 
 test("session-scoped switch: off unregisters the shim, on reinstalls it", async () => {
