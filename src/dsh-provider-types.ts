@@ -12,6 +12,8 @@ export interface ConfigFile {
   poolIdleTtlMs?: number;
   /** Explicitly disable the workspace sandbox and all approval prompts. */
   fullAccess?: boolean;
+  /** Wrap normal Prime providers with DSH. Defaults to true. */
+  transparent?: boolean;
 }
 
 /** DSH's configured default model (`~/.dsh/settings.yaml` → agent-default-model). */
@@ -30,6 +32,8 @@ export interface ResolvedConfig {
   poolIdleTtlMs: number;
   /** True only after an explicit config or exact env opt-in. */
   fullAccess: boolean;
+  /** Route ordinary Prime provider turns through DSH. */
+  transparent: boolean;
   /**
    * The real model DSH is configured to run, read from its settings.yaml at
    * load time. Undefined when unreadable — the catalog then falls back to the

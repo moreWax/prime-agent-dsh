@@ -1,6 +1,8 @@
-## Selectable DSH provider
+## Transparent DSH provider wrapping
 
-The plugin registers a `dsh` provider in Prime’s model picker. Selecting it routes each Prime turn into an in-process DeepSeek Harness tree. DSH owns the full agent loop, context, tools, skills, memory, subagents, and compaction. Prime only displays the streamed assistant text, reasoning, and tool activity.
+By default, users select ordinary Prime models exactly as before. Provider IDs, model picker entries, catalogs, and authentication are unchanged. The extension wraps each native provider’s `streamSimple` so each turn routes into an in-process DeepSeek Harness tree. Use `/dsh-transparent off` for the current process, or set `"transparent": false` in `~/.prime/agent/dsh.json` (or `PI_DSH_TRANSPARENT=0`) to opt out. `/dsh-transparent on|status` enables or reports it.
+
+The legacy `dsh` picker entry remains available for compatibility. Selecting it also routes each Prime turn into an in-process DeepSeek Harness tree. DSH owns the full agent loop, context, tools, skills, memory, subagents, and compaction. Prime only displays the streamed assistant text, reasoning, and tool activity.
 
 The provider is workspace-confined by default. Its embedded DSH tree uses `workspace-write` with approval policy `ask`. DSH alpha.5 approval requests are bridged to Prime's confirmation UI and grant only the requested action. Non-interactive sessions have no answerer and fail closed. Set `"fullAccess": true` in `~/.pi/agent/dsh.json`, or the exact environment value `PI_DSH_FULL_ACCESS=1`, only when unrestricted host access without prompts is intended.
 
@@ -51,7 +53,7 @@ The tool returns a DSH session ID. On the same Prime branch, later calls automat
 
 ## Transparent inference-context integration
 
-v0.0.4 begins the corrected transparent integration in **shadow mode**. Ordinary Prime messages, UI, agent loop, tools, IPython, RLM, skills, sessions, and provider calls remain unchanged. The extension observes final provider payloads, fingerprints request envelopes, measures stable-prefix eligibility, and compares it with actual provider-reported `cacheRead`/`cacheWrite`. It does not mutate context yet.
+Transparent provider wrapping is active by default. Ordinary provider IDs and model picker entries remain unchanged, while DSH owns the model-facing loop, context, tools, skills, sessions, and compaction. Set `PI_DSH_TRANSPARENT=0` to retain native Prime dispatch. The inference-context projection experiment remains in **shadow mode**. The extension observes final provider payloads, fingerprints request envelopes, measures stable-prefix eligibility, and compares it with actual provider-reported `cacheRead`/`cacheWrite`. It does not mutate context yet.
 
 The detailed shadow-first implementation and rollout plan is in [`docs/inference-context-plan.md`](docs/inference-context-plan.md). Context projection and pruning will only enter the provider path after differential tests prove Prime behavioral parity and fail-open recovery.
 

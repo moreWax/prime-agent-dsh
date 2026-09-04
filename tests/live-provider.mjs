@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { registerProvider, createInstanceRuntime } from "../src/dsh-provider.ts";
 import { preparePrimeRoute } from "../src/model-route.ts";
 import { createPrivateRootConfig } from "../src/dsh-provider-security.ts";
+import { TransparentProviderController } from "../src/transparent-provider.ts";
 
 const here = dirname(dirname(fileURLToPath(import.meta.url)));
 const root = mkdtempSync(join(tmpdir(), "prime-agent-dsh-live-"));
@@ -62,7 +63,7 @@ try {
   let registration;
   registerProvider({ registerProvider(name, config) { registration = { name, config }; } }, {
     dshBin: "unused", timeoutMs: 30_000, mode: "pool", poolMax: 2,
-    poolIdleTtlMs: 60_000, fullAccess: false,
+    poolIdleTtlMs: 60_000, fullAccess: false, transparent: true,
   }, runtime);
 
   check("actual dsh provider registers", () => assert.equal(registration?.name, "dsh"));
@@ -113,6 +114,49 @@ try {
   check("abort terminates active DSH turn", () => assert.equal(cancelled.result.stopReason, "aborted"));
   const alive = await turn("RECALL_TOKEN");
   check("abort preserves pooled session", () => assert.equal(alive.text, "ZEBRA_XYZZY"));
+
+  // Host-level acceptance for the transparent UX: the selected model stays
+  // native/native-id while the provider stream enters the same DSH pool.
+  const nativeProvider = {
+    id: "mock-local", name: "Mock Local", auth: { apiKey: {
+      name: "key", login: async () => ({ type: "api_key", key: "x" }),
+      check: async () => ({ type: "api_key", source: "mock" }),
+      resolve: async () => ({ auth: { apiKey: "not-a-vendor-key" }, source: "mock" }),
+    } },
+    getModels: () => [nativeModel],
+    stream: () => { throw new Error("native stream must not run while transparent wrapping is enabled"); },
+    streamSimple: () => { throw new Error("native stream must not run while transparent wrapping is enabled"); },
+  };
+  let transparentProvider;
+  const transparentCtx = {
+    cwd: workspace, thinkingLevel: "off", hasUI: false,
+    sessionManager: { getSessionId: () => `transparent-${Date.now()}` },
+    modelRegistry: {
+      getAll: () => [nativeModel], getProvider: () => nativeProvider,
+      getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "not-a-vendor-key" }),
+    },
+  };
+  const transparent = new TransparentProviderController({
+    on() {}, registerCommand() {}, registerProvider(provider) { transparentProvider = provider; },
+  }, { dshBin: "unused", timeoutMs: 30_000, mode: "pool", poolMax: 2,
+    poolIdleTtlMs: 60_000, fullAccess: false, transparent: true }, { dshHome: () => home });
+  transparent.register();
+  transparent.captureAndPublish(transparentCtx);
+  check("transparent wrapper preserves normal provider and model ids", () => {
+    assert.equal(transparentProvider.id, "mock-local");
+    assert.equal(transparentProvider.getModels()[0].id, "mock-1");
+    assert.equal(transparentProvider.auth, nativeProvider.auth);
+  });
+  const transparentStream = transparentProvider.streamSimple(nativeModel, {
+    messages: [{ role: "user", content: "Reply transparent-ok.", timestamp: Date.now() }], tools: [],
+  }, { sessionId: transparentCtx.sessionManager.getSessionId() });
+  const transparentEvents = [];
+  for await (const event of transparentStream) transparentEvents.push(event.type);
+  const transparentResult = await transparentStream.result();
+  check("normal native selection executes through in-process DSH", () => {
+    assert.equal(transparentResult.stopReason, "stop", transparentResult.errorMessage);
+    assert.ok(transparentEvents.includes("text_delta"));
+  });
 
   const privateRoot = createPrivateRootConfig();
   try { check("loader root config is owner-only", () => assert.equal(statSync(privateRoot.path).mode & 0o777, 0o600)); }

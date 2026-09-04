@@ -20,6 +20,7 @@ export function loadConfig(): ResolvedConfig {
   const envPoolMax = coercePositiveInt(process.env.PI_DSH_POOL_MAX);
   const envPoolIdle = coercePositiveInt(process.env.PI_DSH_POOL_IDLE_TTL_MS);
   const envFullAccess = coerceFullAccess(process.env.PI_DSH_FULL_ACCESS);
+  const envTransparent = coerceBoolean(process.env.PI_DSH_TRANSPARENT);
 
   return {
     dshBin: envBin || fromFile.parsed.dshBin?.trim() || DEFAULT_DSH_BIN,
@@ -28,6 +29,7 @@ export function loadConfig(): ResolvedConfig {
     poolMax: envPoolMax ?? fromFile.parsed.poolMax ?? DEFAULT_POOL_MAX,
     poolIdleTtlMs: envPoolIdle ?? fromFile.parsed.poolIdleTtlMs ?? DEFAULT_POOL_IDLE_TTL_MS,
     fullAccess: envFullAccess ?? fromFile.parsed.fullAccess ?? false,
+    transparent: envTransparent ?? fromFile.parsed.transparent ?? true,
     model: readDshDefaultModel(),
     loadedFrom: fromFile.exists ? CONFIG_PATH : undefined,
   };
@@ -62,6 +64,13 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 }
 
 /** Only exact documented values opt in/out; malformed values cannot grant access. */
+export function coerceBoolean(raw: string | undefined): boolean | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === "1") return true;
+  if (raw === "0") return false;
+  return undefined;
+}
+
 export function coerceFullAccess(raw: string | undefined): boolean | undefined {
   if (raw === undefined) return undefined;
   if (raw === "1") return true;
@@ -107,6 +116,7 @@ function coerceConfigFile(value: unknown, path: string): ConfigFile {
     out.poolMax = value.poolMax;
   }
   if (typeof value.fullAccess === "boolean") out.fullAccess = value.fullAccess;
+  if (typeof value.transparent === "boolean") out.transparent = value.transparent;
   if (typeof value.poolIdleTtlMs === "number" && Number.isFinite(value.poolIdleTtlMs) && value.poolIdleTtlMs > 0) {
     out.poolIdleTtlMs = value.poolIdleTtlMs;
   }
