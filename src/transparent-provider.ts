@@ -60,23 +60,21 @@ export class TransparentProviderController {
       this.bind(ctx);
       this.captureAndPublish(ctx);
     });
-    this.pi.registerCommand("dsh-session", {
-      description: "Enable or disable DSH for this session (on|off|status)",
-      handler: async (args, ctx) => {
-        await Promise.resolve();
-        const value = args.trim().toLowerCase();
-        if (value === "on") this.enabled = true;
-        else if (value === "off") this.enabled = false;
-        else if (value !== "status") { ctx.ui.notify("Usage: /dsh-session on|off|status", "warning"); return; }
-        this.bind(ctx);
-        this.captureAndPublish(ctx);
-        ctx.ui.notify(`DSH is ${this.enabled ? "enabled" : "disabled"} for this session.`, "info");
-      },
-    });
     this.pi.on("session_shutdown", async () => { await this.routes.closeAll(); });
   }
 
   get isEnabled(): boolean { return this.enabled; }
+
+  /**
+   * Session-scoped switch, driven by the single /dsh-session command registered
+   * by the host extension. Returns the new state.
+   */
+  setEnabled(next: boolean, ctx: ExtensionContext): boolean {
+    this.enabled = next;
+    this.bind(ctx);
+    this.captureAndPublish(ctx);
+    return this.enabled;
+  }
 
   private bind(ctx: ExtensionContext): void {
     this.ctx = ctx;

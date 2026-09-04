@@ -84,18 +84,13 @@ test("session-scoped switch: off unregisters the shim, on reinstalls it", async 
   assert.equal(f.controller.isEnabled, true);
   assert.equal(f.registrations.length, 1);
 
-  await f.commands.get("dsh-session")?.handler("off", f.ctx);
-  assert.equal(f.controller.isEnabled, false);
+  assert.equal(f.controller.setEnabled(false, f.ctx), false);
   assert.equal(f.unregistrations.length, 2);   // recovered native
   assert.equal(f.registrations.length, 1);     // no shim reinstalled
 
-  await f.commands.get("dsh-session")?.handler("on", f.ctx);
-  assert.equal(f.controller.isEnabled, true);
+  assert.equal(f.controller.setEnabled(true, f.ctx), true);
   assert.equal(f.unregistrations.length, 3);   // recovers again before reinstall
   assert.equal(f.registrations.length, 2);
-
-  await f.commands.get("dsh-session")?.handler("status", f.ctx);
-  assert.equal(f.controller.isEnabled, true);
 });
 
 test("startup/reload never captures or stacks an old wrapper", () => {

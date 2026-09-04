@@ -1,13 +1,15 @@
 import { compact as compactPrime, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
+import { readdirSync, statSync } from "node:fs";
+import { basename, join } from "node:path";
 import { loadConfig } from "../src/config.js";
 import { notificationSummary } from "../src/notifications.js";
 import { RuntimeManager } from "../src/runtime-manager.js";
 import { PrimeRouteRegistry, type PreparedPrimeRoute } from "../src/model-route.js";
 import { registerShadowContextTelemetry } from "./shadow-context.js";
 import { DurableCompactionController, loadCompactionPlannerConfig } from "../src/compaction.js";
-import { CONFIG_PATH_FOR_DIAGNOSTICS, loadConfig as loadProviderConfig } from "../src/dsh-provider-config.js";
+import { loadConfig as loadProviderConfig } from "../src/dsh-provider-config.js";
 import { bindSessionRuntime, createInstanceRuntime, registerProvider } from "../src/dsh-provider.js";
 import { TransparentProviderController } from "../src/transparent-provider.js";
 import { createPrimeUserQuestionAnswerer, rejectHeadlessUserQuestion } from "../src/prime-user-questions.js";
@@ -25,7 +27,43 @@ interface DshDetails {
   error?: string;
 }
 
+
 const routes = new PrimeRouteRegistry();
+
+/** Number of committed message entries in the current session (0 = fresh). */
+function committedMessages(ctx: ExtensionContext): number {
+  try {
+    return ctx.sessionManager.getBranch().filter((entry) => (entry as { type?: string }).type === "message").length;
+  } catch {
+    return 0;
+  }
+}
+
+/** Most recent sibling session file (same dir, older than this one), if fresh. */
+function recentSiblingSession(ctx: ExtensionContext): { id: string; ageMinutes: number } | undefined {
+  try {
+    const dir = ctx.sessionManager.getSessionDir();
+    const current = ctx.sessionManager.getSessionFile();
+    if (!dir || !current) return undefined;
+    const now = Date.now();
+    let best: { id: string; mtime: number } | undefined;
+    for (const name of readdirSync(dir)) {
+      if (!name.endsWith(".jsonl")) continue;
+      const full = join(dir, name);
+      if (full === current) continue;
+      let mtime: number;
+      try { mtime = statSync(full).mtimeMs; } catch { continue; }
+      if (!best || mtime > best.mtime) best = { id: basename(name, ".jsonl"), mtime };
+    }
+    if (!best || best.mtime >= now) return undefined;
+    const ageMinutes = Math.round((now - best.mtime) / 60000);
+    if (ageMinutes > 720) return undefined; // only nudge for recent siblings
+    return { id: best.id, ageMinutes };
+  } catch {
+    return undefined;
+  }
+}
+
 
 async function configFor(pi: ExtensionAPI, ctx: ExtensionContext) {
   const config = loadConfig(ctx.cwd, {
@@ -143,11 +181,18 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
       : rejectHeadlessUserQuestion;
     bindSessionRuntime(sessionId, providerRuntime);
     if (ctx.hasUI) {
-      const configHint = providerConfig.loadedFrom ? "" : `; defaults (no ${CONFIG_PATH_FOR_DIAGNOSTICS})`;
-      ctx.ui.notify(
-        `DSH provider ready (mode=${providerConfig.mode}, poolMax=${providerConfig.poolMax}${configHint}).`,
-        "info",
-      );
+      const messages = committedMessages(ctx);
+      const modelLabel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "none";
+      const dshState = transparentController.isEnabled ? "on" : "off";
+      if (messages > 0) {
+        ctx.ui.notify(`Session resumed (${messages} messages) · DSH ${dshState} · model ${modelLabel}`, "info");
+      } else {
+        const sibling = recentSiblingSession(ctx);
+        const hint = sibling
+          ? ` · a session from ${sibling.ageMinutes} min ago exists — resume it to keep context`
+          : "";
+        ctx.ui.notify(`Fresh session · DSH ${dshState} · model ${modelLabel}${hint}`, "info");
+      }
     }
   });
   let manager = new RuntimeManager();
@@ -251,72 +296,78 @@ DSH session: ${result.sessionId}` }],
     },
   });
 
-  pi.registerCommand("dsh", {
-    description: "Run a task in the real DeepSeek Harness runtime",
+    // Single user-facing command (devX: three words max). Control verbs act on
+  // the session; "run" delegates a one-shot task; the rest are diagnostics
+  // reachable on demand instead of cluttering the palette.
+  pi.registerCommand("dsh-session", {
+    description: "DSH for this session: on | off | status | capabilities | doctor | run <task>",
     handler: async (args, ctx) => {
-      if (!args.trim()) { ctx.ui.notify("Usage: /dsh <task>", "warning"); return; }
-      const config = await configFor(pi, ctx);
-      const sessionId = sessionFor(ctx);
-      ctx.ui.setStatus("deepseek-harness", "DSH running");
-      try {
-        const result = await manager.run(args, config, {
-          cwd: ctx.cwd,
-          sessionId,
-          onPermission: async (title, choices) => {
-            if (!ctx.hasUI) return undefined;
-            const labels = choices.map((choice) => `${choice.allow ? "Allow" : "Reject"}: ${choice.label}`);
-            const selected = await ctx.ui.select(title, labels);
-            const index = selected === undefined ? -1 : labels.indexOf(selected);
-            return index >= 0 ? choices[index]?.id : undefined;
-          },
-        });
-        pi.sendMessage({ customType: "deepseek-harness", content: result.text || "DeepSeek Harness completed without text.", display: true,
-          details: { sessionId: result.sessionId, state: "completed", profile: config.profile, provider: config.provider, model: config.model } satisfies DshDetails },
-          { deliverAs: "nextTurn" });
-        ctx.ui.notify(`DeepSeek Harness completed (${result.sessionId})`, "info");
-      } catch (error) {
-        ctx.ui.notify(`DeepSeek Harness failed: ${error instanceof Error ? error.message : String(error)}`, "error");
-      } finally { ctx.ui.setStatus("deepseek-harness", undefined); }
-    },
-  });
-
-  pi.registerCommand("dsh-status", {
-    description: "Show bridge runtime status and active configuration",
-    handler: async (_args, ctx) => {
       await Promise.resolve();
-      const config = loadConfig(ctx.cwd, { dshBin: pi.getFlag("dsh-bin") as string | undefined,
-        dshHome: pi.getFlag("dsh-home") as string | undefined });
-      const status = manager.status();
-      const selected = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "none";
-      const transparent = (typeof transparentController?.isEnabled === "boolean" && transparentController.isEnabled)
-        ? "on" : "off";
-      ctx.ui.notify(
-        `DSH: transparent=${transparent}, Prime model=${selected}, runtimes=${status.length}, home=${config.dshHome}`,
-        "info",
-      );
-    },
-  });
-
-  pi.registerCommand("dsh-capabilities", {
-    description: "Show evidence-backed capabilities of the embedded DSH base profile",
-    handler: async (_args, ctx) => {
-      await Promise.resolve();
-      const capabilitiesConfig = loadProviderConfig();
-      ctx.ui.notify(formatDshCapabilities(dshCapabilityRegistry(capabilitiesConfig)), "info");
-    },
-  });
-
-  pi.registerCommand("dsh-doctor", {
-    description: "Verify the DSH ACP initialize/new/close lifecycle without a model call",
-    handler: async (_args, ctx) => {
-      const config = await configFor(pi, ctx);
-      ctx.ui.notify(`Checking DSH ${config.profile} runtime...`, "info");
-      try {
-        const result = await manager.doctor(config, ctx.cwd);
-        ctx.ui.notify(`DSH ACP bridge OK (protocol ${result.protocolVersion})`, "info");
-      } catch (error) {
-        ctx.ui.notify(`DSH doctor failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+      const [rawVerb, ...rest] = args.trim().split(/\s+/);
+      const verb = (rawVerb ?? "").toLowerCase();
+      const commandCtx = ctx as unknown as Parameters<typeof transparentController.setEnabled>[1];
+      const runTask = async (task: string): Promise<void> => {
+        if (!task) { ctx.ui.notify("Usage: /dsh-session run <task>", "warning"); return; }
+        const config = await configFor(pi, ctx);
+        const sessionId = sessionFor(ctx);
+        ctx.ui.setStatus("deepseek-harness", "DSH running");
+        try {
+          const result = await manager.run(task, config, {
+            cwd: ctx.cwd,
+            sessionId,
+            onPermission: async (title, choices) => {
+              if (!ctx.hasUI) return undefined;
+              const labels = choices.map((choice) => `${choice.allow ? "Allow" : "Reject"}: ${choice.label}`);
+              const selected = await ctx.ui.select(title, labels);
+              const index = selected === undefined ? -1 : labels.indexOf(selected);
+              return index >= 0 ? choices[index]?.id : undefined;
+            },
+          });
+          pi.sendMessage({ customType: "deepseek-harness", content: result.text || "DeepSeek Harness completed without text.", display: true,
+            details: { sessionId: result.sessionId, state: "completed", profile: config.profile, provider: config.provider, model: config.model } satisfies DshDetails },
+            { deliverAs: "nextTurn" });
+          ctx.ui.notify(`DeepSeek Harness completed (${result.sessionId})`, "info");
+        } catch (error) {
+          ctx.ui.notify(`DeepSeek Harness failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+        } finally { ctx.ui.setStatus("deepseek-harness", undefined); }
+      };
+      if (verb === "on") {
+        transparentController.setEnabled(true, commandCtx);
+        ctx.ui.notify("DSH is enabled for this session.", "info");
+        return;
       }
+      if (verb === "off") {
+        transparentController.setEnabled(false, commandCtx);
+        ctx.ui.notify("DSH is disabled for this session.", "info");
+        return;
+      }
+      if (verb === "status") {
+        const config = loadConfig(ctx.cwd, { dshBin: pi.getFlag("dsh-bin") as string | undefined,
+          dshHome: pi.getFlag("dsh-home") as string | undefined });
+        const status = manager.status();
+        const selected = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "none";
+        const transparent = transparentController.isEnabled ? "on" : "off";
+        ctx.ui.notify(`DSH: transparent=${transparent}, Prime model=${selected}, runtimes=${status.length}, home=${config.dshHome}`, "info");
+        return;
+      }
+      if (verb === "capabilities") {
+        const capabilitiesConfig = loadProviderConfig();
+        ctx.ui.notify(formatDshCapabilities(dshCapabilityRegistry(capabilitiesConfig)), "info");
+        return;
+      }
+      if (verb === "doctor") {
+        const config = await configFor(pi, ctx);
+        ctx.ui.notify(`Checking DSH ${config.profile} runtime...`, "info");
+        try {
+          const result = await manager.doctor(config, ctx.cwd);
+          ctx.ui.notify(`DSH ACP bridge OK (protocol ${result.protocolVersion})`, "info");
+        } catch (error) {
+          ctx.ui.notify(`DSH doctor failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+        }
+        return;
+      }
+      if (verb === "run") { await runTask(rest.join(" ").trim()); return; }
+      ctx.ui.notify("Usage: /dsh-session on | off | status | capabilities | doctor | run <task>", "warning");
     },
   });
 }
