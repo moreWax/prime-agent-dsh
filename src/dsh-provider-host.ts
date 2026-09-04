@@ -223,6 +223,19 @@ function deterministicSessionId(key: string): string {
   return "pi-" + createHash("sha256").update(key).digest("hex").slice(0, 32);
 }
 
+/**
+ * Stable DSH session id for one Prime conversation. Deliberately derived from
+ * the conversation identity ALONE — never from cwd, model route, sandbox mode,
+ * or MCP capability — so that resuming the same Prime session (possibly in a
+ * different cwd or with a different model) reattaches to the SAME DSH
+ * conversation instead of forking an empty one. Pool LRU bookkeeping still
+ * uses the full isolated key; only the persisted session id is conversation-
+ * scoped.
+ */
+export function conversationSessionId(sessionKey: string): string {
+  return deterministicSessionId(`pi-conversation\0${sessionKey}`);
+}
+
 export interface AgentPoolOptions {
   cwd: string;
   route: PreparedPrimeRoute;
@@ -246,6 +259,8 @@ export async function getOrCreateAgent(key: string, opts: AgentPoolOptions): Pro
     mcpServers: opts.mcpServers, persistentTerminal: opts.persistentTerminal,
   })).digest("hex");
   const isolatedKey = `${agentPoolKey(cwd, key, opts.fullAccess, opts.route.fingerprint)}\0${capabilityFingerprint}`;
+  // The persisted conversation id is stable across cwd/model/mode changes.
+  const sid = conversationSessionId(key);
   const entry = await pool.acquire(isolatedKey, opts.poolMax, async () => {
     const ctx = await getTree(cwd, opts.fullAccess, opts.route);
     const agents = ctx.get("agents");
@@ -254,7 +269,6 @@ export async function getOrCreateAgent(key: string, opts: AgentPoolOptions): Pro
     if (!agents || !defaultModel || !persistence) {
       throw new Error("[pi-dsh] dsh tree is missing agents/agentDefaultModel/sessionPersistence");
     }
-    const sid = deterministicSessionId(isolatedKey);
     const target = { provider: opts.route.provider, model: opts.route.model,
       ...(opts.route.reasoningEffort ? { reasoningEffort: ReasoningEffortId(opts.route.reasoningEffort) } : {}) };
     const persisted = await persistence.list()

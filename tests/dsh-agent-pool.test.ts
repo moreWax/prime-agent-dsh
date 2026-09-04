@@ -60,3 +60,16 @@ test("pooled DSH identities are isolated by native Prime route", async () => {
   assert.notEqual(agentPoolKey("/work", "session", false, "route-a"), agentPoolKey("/work", "session", false, "route-b"));
   assert.equal(agentPoolKey("/work", "session", false, "route-a"), agentPoolKey("/work", "session", false, "route-a"));
 });
+
+test("conversation session id is stable across cwd/model/sandbox drift", async () => {
+  const { conversationSessionId, agentPoolKey } = await import("../src/dsh-provider-host.js");
+  const conv = "prime-session-123";
+  // Same conversation -> same persisted DSH session id, no matter the inputs
+  // that used to leak into it (cwd, route/model fingerprint, fullAccess).
+  assert.equal(conversationSessionId(conv), conversationSessionId(conv));
+  assert.notEqual(conversationSessionId("prime-session-123"), conversationSessionId("prime-session-456"));
+  // The pool (LRU) key may still differ by route/mode — that is fine and
+  // intentional; only the persisted session id is conversation-scoped.
+  assert.notEqual(agentPoolKey("/a", conv, false, "route-1"), agentPoolKey("/b", conv, true, "route-2"));
+  assert.match(conversationSessionId(conv), /^pi-[0-9a-f]{32}$/);
+});
