@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -56,22 +56,22 @@ test("explicit dsh.json MCP entries win over inherited Prime entries per serverN
 });
 
 
-test("modular default: transparent provider wrapping stays off unless opted in", async () => {
-  const home = mkdtempSync(join(tmpdir(), "pi-dsh-config-"));
-  const saved = { ...process.env };
-  process.env.PRIME_AGENT_HOME = home;
-  delete process.env.PI_DSH_TRANSPARENT;
+test("transparent wrapping is the package default and can be disabled", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-dsh-transparent-default-"));
   try {
-    const fresh = (await import(`../src/dsh-provider-config.js?case=${Date.now()}`)) as {
+    const fresh = (await import(`../src/dsh-provider-config.js?default-test=${Date.now()}`)) as {
       loadConfig: () => { transparent: boolean };
     };
-    assert.equal(fresh.loadConfig().transparent, false);
+    const explicit = (await import(`../src/dsh-provider-config.js?default-test2=${Date.now()}`)) as {
+      loadConfig: () => { transparent: boolean };
+    };
     process.env.PI_DSH_TRANSPARENT = "1";
-    assert.equal(fresh.loadConfig().transparent, true);
+    try {
+      assert.equal(fresh.loadConfig().transparent, true);   // package default: on
+      process.env.PI_DSH_TRANSPARENT = "";
+      assert.equal(explicit.loadConfig().transparent, true); // file default: on
+    } finally { delete process.env.PI_DSH_TRANSPARENT; }
     process.env.PI_DSH_TRANSPARENT = "0";
-    assert.equal(fresh.loadConfig().transparent, false);
-  } finally {
-    for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
-    for (const [key, value] of Object.entries(saved)) process.env[key] = value;
-  }
+    try { assert.equal(explicit.loadConfig().transparent, false); } finally { delete process.env.PI_DSH_TRANSPARENT; }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
