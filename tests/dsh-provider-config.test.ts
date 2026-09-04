@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { coerceConfigFile, coercePrimeMcpServers, mergeMcpServers } from "../src/dsh-provider-config.js";
 
@@ -54,9 +57,6 @@ test("explicit dsh.json MCP entries win over inherited Prime entries per serverN
 
 
 test("modular default: transparent provider wrapping stays off unless opted in", async () => {
-  const { mkdtempSync } = await import("node:fs");
-  const { tmpdir } = await import("node:os");
-  const { join } = await import("node:path");
   const home = mkdtempSync(join(tmpdir(), "pi-dsh-config-"));
   const saved = { ...process.env };
   process.env.PRIME_AGENT_HOME = home;
