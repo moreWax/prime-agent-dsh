@@ -1,4 +1,3 @@
-import { sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext, ProviderConfig } from "@earendil-works/pi-coding-agent";
 import * as PiAi from "@earendil-works/pi-ai/compat";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
@@ -10,7 +9,7 @@ import {
   findLatestPrimeUserEntryId,
   findNearestDshBranchCheckpoint,
 } from "./dsh-branch-checkpoint.js";
-import type { Api, AssistantMessageEventStream, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, AssistantMessageEventStream, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import type { ResolvedConfig } from "./dsh-provider-types.js";
 import { bindSessionRuntime, createInstanceRuntime, streamDsh, type InstanceRuntime } from "./dsh-provider.js";
 import { PrimeRouteRegistry } from "./model-route.js";
@@ -32,7 +31,7 @@ function registrationName(api: Api): string {
   return `${REGISTRATION_PREFIX}${encodeURIComponent(api)}`;
 }
 
-type TransparentProviderHost = Pick<ExtensionAPI, "on" | "appendEntry" | "registerCommand" | "registerProvider" | "unregisterProvider">;
+type TransparentProviderHost = Pick<ExtensionAPI, "on" | "appendEntry" | "registerCommand" | "registerProvider" | "unregisterProvider"> & Partial<Pick<ExtensionAPI, "getThinkingLevel">>;
 
 export interface TransparentProviderControllerOptions {
   dshHome: (ctx: ExtensionContext) => string;
@@ -96,6 +95,10 @@ export class TransparentProviderController {
     const primeSessionId = ctx.sessionManager.getSessionId?.() ?? ctx.cwd;
     this.runtime.cwd = ctx.cwd;
     this.runtime.sessionKey = primeSessionId;
+    // Transparent dispatch already owns the exact session runtime. The legacy
+    // selectable provider uses the global session binding map; consulting it
+    // here would let that provider overwrite branch/recovery callbacks.
+    this.runtime.useSessionBinding = false;
     this.runtime.approvalAnswerer = ctx.hasUI
       ? ({ toolName, reason }) => ctx.ui.confirm(`DSH permission: ${toolName}`, reason ?? "Allow this operation once outside the workspace sandbox?")
       : undefined;
@@ -214,86 +217,58 @@ export class TransparentProviderController {
       const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
       if (!auth.ok) throw new Error(`Could not resolve Prime model authentication: ${auth.error}`);
       const headers = auth.headers ? Object.fromEntries(Object.entries(auth.headers).filter((entry): entry is [string, string] => typeof entry[1] === "string")) : undefined;
-      return this.routes.prepare({ model, auth: { apiKey: auth.apiKey, headers }, thinkingLevel: model.reasoning ? ctx.thinkingLevel : undefined }, this.options.dshHome(ctx));
+      return this.routes.prepare({ model, auth: { apiKey: auth.apiKey, headers }, thinkingLevel: model.reasoning ? this.pi.getThinkingLevel?.() : undefined }, this.options.dshHome(ctx));
     };
-    // DSH must never hold the session hostage: if its stream fails before
-    // producing any content, fall back to the native provider for this turn
-    // and disable DSH for the session with a visible notice.
+    // Never switch to Prime's separate transcript after a DSH failure. Doing
+    // so would silently change context authorities mid-conversation.
     const out = createAssistantMessageEventStream();
-    void this.pumpDshWithFallback(out, model, context, options, native);
+    void this.pumpDsh(out, model, context, options);
     return out;
   }
 
-  private async pumpDshWithFallback(
+  private async pumpDsh(
     out: AssistantMessageEventStream,
     model: Model<Api>,
     context: Parameters<StreamSimple>[1],
     options: SimpleStreamOptions | undefined,
-    native: StreamSimple,
   ): Promise<void> {
-    const dshStream = streamDsh(model, context, options, this.cfg, this.runtime);
-    let produced = false;
-    const fallback = async (): Promise<void> => {
-      this.enabled = false;
-      this.ctx?.ui?.notify?.(
-        "DSH inference failed this turn; fell back to the native provider and disabled DSH for this session (re-enable with /dsh-session on).",
-        "error",
-      );
-      try {
-        for await (const nativeEvent of native(model, context, options)) out.push(nativeEvent);
-      } finally {
-        out.end();
-      }
-    };
     try {
-      for await (const event of dshStream) {
-        if (!produced && event && typeof event === "object" && (event as { type?: unknown }).type === "error") {
-          await fallback();
-          return;
+      for await (const event of streamDsh(model, context, options, this.cfg, this.runtime)) {
+        if (event && typeof event === "object" && (event as { type?: unknown }).type === "error") {
+          this.ctx?.ui?.notify?.(
+            "DSH inference failed. The native provider was not used because it does not share DSH context; retry after checking /dsh-session doctor.",
+            "error",
+          );
         }
-        produced = true;
         out.push(event);
       }
       out.end();
-    } catch {
-      if (!produced) await fallback();
-      else out.end();
+    } catch (error) {
+      const failed = dshTransportFailure(model, error);
+      out.push({ type: "error", reason: "error", error: failed });
+      out.end();
+      this.ctx?.ui?.notify?.(failed.errorMessage ?? "DSH inference failed", "error");
     }
   }
 }
 
-interface StreamLike { [Symbol.asyncIterator](): AsyncIterator<unknown>; }
-
-/**
- * Yields the DSH stream normally. If the stream errors or throws BEFORE any
- * content event is produced, it switches to the fallback (native) stream and
- * reports once. Content-first failures pass through untouched.
- */
-export async function* fallbackOnDshFailure(
-  dshStream: StreamLike,
-  fallback: () => StreamLike,
-): AsyncGenerator<unknown, void, void> {
-  let produced = false;
-  try {
-    for await (const event of dshStream) {
-      if (!produced) {
-        if (event && typeof event === "object" && (event as { type?: unknown }).type === "error") {
-          for await (const nativeEvent of fallback()) yield nativeEvent;
-          return;
-        }
-        produced = true;
-      }
-      yield event;
-    }
-  } catch (error) {
-    if (!produced) {
-      for await (const nativeEvent of fallback()) yield nativeEvent;
-    } else {
-      throw error;
-    }
-  }
+function dshTransportFailure(model: Model<Api>, error: unknown): AssistantMessage {
+  const message = error instanceof Error ? error.message : String(error);
+  return {
+    role: "assistant",
+    content: [],
+    api: model.api,
+    provider: model.provider,
+    model: model.id,
+    usage: {
+      input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: "error",
+    errorMessage: `DSH inference failed without changing context: ${message}`,
+    timestamp: Date.now(),
+  };
 }
-
 
 /**
  * Stage 3: walk Prime's committed session tree and reduce it to surface
@@ -301,17 +276,32 @@ export async function* fallbackOnDshFailure(
  * pi-dsh/turn entries; the transcript carries the canonical conversation).
  */
 function resolvePrimeTranscript(ctx: ExtensionContext): TranscriptMessage[] {
-  const convert = sessionEntryToContextMessages as unknown as
-    (entry: unknown) => Array<{ role: string; content: unknown }> | undefined;
-  const entries = (ctx.sessionManager.getBranch?.() ?? []) as unknown[];
-  const out: Array<{ role: string; content: unknown }> = [];
-  for (const entry of entries) {
-    try {
-      const messages = convert(entry);
-      if (messages) out.push(...messages);
-    } catch {
-      // skip entries this Prime version cannot convert
+  const manager = ctx.sessionManager as typeof ctx.sessionManager & {
+    buildSessionContext?: () => { messages?: Array<{ role: string; content: unknown }> };
+  };
+  const resolved = manager.buildSessionContext?.().messages;
+  if (Array.isArray(resolved)) {
+    return omitCurrentUserFromSeed(transcriptFromMessages(resolved));
+  }
+
+  // Compatibility fallback for older Prime hosts. Current Prime versions use
+  // buildSessionContext(), which respects compaction and branch summaries.
+  const raw: Array<{ role: string; content: unknown }> = [];
+  for (const entry of (manager.getBranch?.() ?? []) as Array<{
+    type?: unknown;
+    message?: { role?: unknown; content?: unknown };
+  }>) {
+    if (entry.type !== "message") continue;
+    const role = entry.message?.role;
+    if ((role === "user" || role === "assistant") && entry.message) {
+      raw.push({ role, content: entry.message.content });
     }
   }
-  return transcriptFromMessages(out);
+  return omitCurrentUserFromSeed(transcriptFromMessages(raw));
+}
+
+/** The active provider call submits the current user turn after seeding. */
+export function omitCurrentUserFromSeed(messages: readonly TranscriptMessage[]): TranscriptMessage[] {
+  if (messages.at(-1)?.role === "user") return messages.slice(0, -1);
+  return [...messages];
 }

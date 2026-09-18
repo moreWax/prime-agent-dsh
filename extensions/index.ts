@@ -84,7 +84,7 @@ async function configFor(pi: ExtensionAPI, ctx: ExtensionContext) {
   const resolvedHeaders = auth.headers
     ? Object.fromEntries(Object.entries(auth.headers).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
     : undefined;
-  const route = await routes.prepare({ model, auth: { apiKey: auth.apiKey, headers: resolvedHeaders }, thinkingLevel: undefined }, config.dshHome);
+  const route = await routes.prepare({ model, auth: { apiKey: auth.apiKey, headers: resolvedHeaders }, thinkingLevel: model.reasoning ? pi.getThinkingLevel() : undefined }, config.dshHome);
   config.profile = "acp";
   config.provider = model.provider;
   config.model = model.id;
@@ -120,7 +120,7 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
   const providerConfig = loadProviderConfig();
   const providerRuntime = createInstanceRuntime();
   let lastNativeModel: Model<Api> | undefined;
-  let lastThinkingLevel: ExtensionContext["thinkingLevel"];
+  let lastThinkingLevel: ReturnType<ExtensionAPI["getThinkingLevel"]>;
   let preparedRoute: PreparedPrimeRoute | undefined;
   const selectNative = (model: Model<Api> | undefined): void => {
     if (model?.provider === "dsh") return;
@@ -174,7 +174,7 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
         if (restored) { selectNative(restored); break; }
       }
     }
-    lastThinkingLevel = ctx.thinkingLevel;
+    lastThinkingLevel = pi.getThinkingLevel();
     sessionRuntime.resolveRoute = () => resolveProviderRoute(ctx);
     const sessionId = ctx.sessionManager.getSessionId?.() ?? ctx.cwd;
     sessionRuntime.sessionKey = sessionId;
@@ -253,7 +253,7 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
       const headers = auth.headers
         ? Object.fromEntries(Object.entries(auth.headers).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
         : undefined;
-      return compactPrime(plan.preparation, model, auth.apiKey, headers, event.customInstructions, event.signal, ctx.thinkingLevel,
+      return compactPrime(plan.preparation, model, auth.apiKey, headers, event.customInstructions, event.signal, pi.getThinkingLevel(),
         undefined, undefined, undefined, undefined, ctx.sessionManager.getSessionId());
     },
   );

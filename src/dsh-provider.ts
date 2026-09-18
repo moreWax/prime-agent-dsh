@@ -57,6 +57,8 @@ export interface InstanceRuntime {
   sessionKey: string;
   approvalAnswerer?: (request: { toolName: string; reason?: string }) => Promise<boolean>;
   userQuestionAnswerer?: UserQuestionAnswerer;
+  /** Set false when the caller owns an exact per-session runtime and must not consult global provider bindings. */
+  useSessionBinding?: boolean;
   /** Resolves the native model and already-resolved request auth for this call. */
   resolveRoute?: (model: Model<Api>, options: SimpleStreamOptions | undefined) => Promise<PreparedPrimeRoute>;
   /**
@@ -93,6 +95,7 @@ function resolveCallRuntime(
   options: SimpleStreamOptions | undefined,
   fallback: InstanceRuntime,
 ): InstanceRuntime {
+  if (fallback.useSessionBinding === false) return fallback;
   const sessionId = (options as { sessionId?: unknown } | undefined)?.sessionId;
   if (typeof sessionId !== "string" || !sessionId) return fallback;
   const bound = sessionRuntimes.get(sessionId);
