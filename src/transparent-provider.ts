@@ -1,8 +1,15 @@
 import { sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext, ProviderConfig } from "@earendil-works/pi-coding-agent";
-import * as PiAi from "@earendil-works/pi-ai";
+import * as PiAi from "@earendil-works/pi-ai/compat";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { transcriptFromMessages, type TranscriptMessage } from "./context-seed.js";
+import {
+  DSH_CHECKPOINT_CUSTOM_TYPE,
+  deriveBaseDshSessionId,
+  deriveForkedDshSessionId,
+  findLatestPrimeUserEntryId,
+  findNearestDshBranchCheckpoint,
+} from "./dsh-branch-checkpoint.js";
 import type { Api, AssistantMessageEventStream, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import type { ResolvedConfig } from "./dsh-provider-types.js";
 import { bindSessionRuntime, createInstanceRuntime, streamDsh, type InstanceRuntime } from "./dsh-provider.js";
@@ -25,12 +32,19 @@ function registrationName(api: Api): string {
   return `${REGISTRATION_PREFIX}${encodeURIComponent(api)}`;
 }
 
-type TransparentProviderHost = Pick<ExtensionAPI, "on" | "registerCommand" | "registerProvider" | "unregisterProvider">;
+type TransparentProviderHost = Pick<ExtensionAPI, "on" | "appendEntry" | "registerCommand" | "registerProvider" | "unregisterProvider">;
 
 export interface TransparentProviderControllerOptions {
   dshHome: (ctx: ExtensionContext) => string;
   /** Test seam; production reads Prime's installed pi-ai API registry. */
   getNativeStream?: (api: Api) => StreamSimple | undefined;
+}
+
+/** Prime's continual-harness refinement is a one-shot auxiliary request, not a user turn. */
+export function isPrimeRefinementContext(context: { systemPrompt?: string }): boolean {
+  const prompt = context.systemPrompt ?? "";
+  return prompt.includes("Prime Agent's /refine continual harness subsystem")
+    || prompt.includes("Prime Agent's automatic /refine review gate");
 }
 
 /**
@@ -40,7 +54,7 @@ export interface TransparentProviderControllerOptions {
  */
 export class TransparentProviderController {
   private enabled = true;
-  private readonly runtime: InstanceRuntime = createInstanceRuntime();
+  private runtime: InstanceRuntime = createInstanceRuntime();
   private readonly routes = new PrimeRouteRegistry();
   private readonly nativeStreams = new Map<Api, StreamSimple>();
   private readonly knownApis = new Set<Api>();
@@ -57,6 +71,7 @@ export class TransparentProviderController {
     this.pi.on("session_start", async (_event, ctx) => {
       await Promise.resolve();
       this.enabled = true;
+      this.runtime = createInstanceRuntime();
       this.bind(ctx);
       this.captureAndPublish(ctx);
     });
@@ -78,25 +93,62 @@ export class TransparentProviderController {
 
   private bind(ctx: ExtensionContext): void {
     this.ctx = ctx;
+    const primeSessionId = ctx.sessionManager.getSessionId?.() ?? ctx.cwd;
     this.runtime.cwd = ctx.cwd;
-    this.runtime.sessionKey = ctx.sessionManager.getSessionId?.() ?? ctx.cwd;
+    this.runtime.sessionKey = primeSessionId;
     this.runtime.approvalAnswerer = ctx.hasUI
       ? ({ toolName, reason }) => ctx.ui.confirm(`DSH permission: ${toolName}`, reason ?? "Allow this operation once outside the workspace sandbox?")
       : undefined;
-    // Stage 2: durable write-back. After every completed DSH turn, anchor the
-    // conversation (stable sid + outcome) into Prime's canonical session JSONL
-    // so a reload can reattach or rebuild DSH from Prime's own record. This is
-    // deliberately best-effort and non-fatal.
+    this.runtime.resolveBranchTarget = () => {
+      const currentPrimeSessionId = ctx.sessionManager.getSessionId?.() ?? ctx.cwd;
+      const branch = (ctx.sessionManager.getBranch?.() ?? []) as unknown[];
+      const primeTurnEntryId = findLatestPrimeUserEntryId(branch);
+      if (!primeTurnEntryId) throw new Error("Cannot resolve the persisted Prime user turn for DSH");
+      // Prime /fork copies ancestor entries into a new session file. The
+      // checkpoint remains the valid DSH source even though its recorded Prime
+      // session id belongs to the parent file; the new session id is included
+      // in the deterministic child id below.
+      const checkpoint = findNearestDshBranchCheckpoint(branch);
+      const baseSessionId = deriveBaseDshSessionId(currentPrimeSessionId, primeTurnEntryId);
+      return {
+        primeSessionId: currentPrimeSessionId,
+        primeTurnEntryId,
+        baseSessionId,
+        ...(checkpoint ? {
+          checkpoint: {
+            dshSessionId: checkpoint.dshSessionId,
+            dshBoundarySeq: checkpoint.dshBoundarySeq,
+          },
+          childSessionId: deriveForkedDshSessionId(
+            currentPrimeSessionId,
+            primeTurnEntryId,
+            checkpoint.dshSessionId,
+            checkpoint.dshBoundarySeq,
+          ),
+        } : {}),
+      };
+    };
     this.runtime.onTurnComplete = (info) => {
       try {
-        const session = ctx.sessionManager as { appendCustomEntry?: (type: string, data?: unknown) => void };
-        session.appendCustomEntry?.("pi-dsh/turn", { v: 1, ...info });
-      } catch {
-        // Anchors never break the provider path.
+        if (!info.primeSessionId || !info.primeTurnEntryId) return;
+        if (ctx.sessionManager.getSessionId?.() !== info.primeSessionId) return;
+        if (ctx.sessionManager.getLeafId?.() !== info.primeTurnEntryId) return;
+        this.pi.appendEntry(DSH_CHECKPOINT_CUSTOM_TYPE, {
+          version: 1,
+          primeSessionId: info.primeSessionId,
+          primeTurnEntryId: info.primeTurnEntryId,
+          dshSessionId: info.dshSessionId,
+          dshBoundarySeq: info.dshBoundarySeq,
+          outcome: info.reason,
+        });
+      } catch (error) {
+        ctx.ui?.notify?.(
+          `DSH checkpoint could not be persisted; do not continue this branch: ${error instanceof Error ? error.message : String(error)}`,
+          "error",
+        );
       }
     };
-    // Stage 3: seed DSH from Prime's canonical transcript when the persisted
-    // DSH session is gone. Best-effort; called only at agent creation.
+    // Legacy recovery only: checkpoints preserve the full DSH event log.
     this.runtime.onRestored = (info) => {
       try {
         ctx.ui?.notify?.(`DSH conversation rebuilt from Prime transcript (${info.seededTurns} turns).`, "info");
@@ -116,9 +168,9 @@ export class TransparentProviderController {
 
   /** Public for deterministic host-level acceptance tests. */
   captureAndPublish(ctx: ExtensionContext): void {
-    for (const model of ctx.modelRegistry.getAll()) {
-      if (!INTERNAL_PROVIDERS.has(model.provider)) this.knownApis.add(model.api);
-    }
+    const nativeModels = ctx.modelRegistry.getAll()
+      .filter((model) => !INTERNAL_PROVIDERS.has(model.provider));
+    for (const model of nativeModels) this.knownApis.add(model.api);
 
     // A prior extension instance can still own these API slots after /reload.
     // Unregistering first makes Prime rebuild the native registry and reapply
@@ -127,7 +179,15 @@ export class TransparentProviderController {
     if (!this.enabled) return; // session-scoped off: native providers resume
     this.nativeStreams.clear();
     for (const api of this.knownApis) {
-      const native = this.options.getNativeStream?.(api)
+      const injected = this.options.getNativeStream?.(api);
+      const model = nativeModels.find((candidate) => candidate.api === api);
+      const registry = ctx.modelRegistry as typeof ctx.modelRegistry & {
+        getProvider?: (providerId: string) => { streamSimple?: StreamSimple } | undefined;
+      };
+      const provider = !injected && model ? registry.getProvider?.(model.provider) : undefined;
+      const providerStream = provider?.streamSimple?.bind(provider);
+      const native = injected
+        ?? providerStream
         ?? (hasApiRegistry(PiAi) ? PiAi.getApiProvider(api)?.streamSimple : undefined);
       if (!native) throw new Error(`Cannot capture native streamSimple for API ${api}`);
       this.nativeStreams.set(api, native);
@@ -145,7 +205,9 @@ export class TransparentProviderController {
   private dispatch(model: Model<Api>, context: Parameters<StreamSimple>[1], options?: SimpleStreamOptions) {
     const native = this.nativeStreams.get(model.api);
     if (!native) throw new Error(`Native streamSimple is unavailable for API ${model.api}`);
-    if (!this.enabled || INTERNAL_PROVIDERS.has(model.provider)) return native(model, context, options);
+    if (!this.enabled || INTERNAL_PROVIDERS.has(model.provider) || isPrimeRefinementContext(context)) {
+      return native(model, context, options);
+    }
     const ctx = this.ctx;
     if (!ctx) return native(model, context, options);
     this.runtime.resolveRoute = async () => {

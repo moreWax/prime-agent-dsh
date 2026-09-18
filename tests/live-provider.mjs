@@ -63,11 +63,11 @@ async function coldTurn(sessionKey, provider, prompt) {
 let route;
 try {
   const pkg = JSON.parse(readFileSync(join(here, "package.json"), "utf8"));
-  check("embedded DSH remains pinned to alpha.5", () => {
-    assert.equal(pkg.dependencies["@deepseek-ai/dsh-app-boot"], "0.1.2-alpha.5");
+  check("embedded DSH remains pinned to 0.1.6-alpha.2", () => {
+    assert.equal(pkg.dependencies["@deepseek-ai/dsh-app-boot"], "0.1.6-alpha.2");
     const dshDependencies = Object.entries(pkg.dependencies).filter(([name]) => name.startsWith("@deepseek-ai/dsh"));
     assert.ok(dshDependencies.length > 100);
-    assert.ok(dshDependencies.every(([, version]) => version === "0.1.2-alpha.5"));
+    assert.ok(dshDependencies.every(([, version]) => version === "0.1.6-alpha.2"));
   });
 
   const nativeModel = {
@@ -103,11 +103,12 @@ try {
     const events = [];
     for await (const event of stream) events.push(event.type);
     const result = await stream.result();
-    return { result, events, text: (result?.content ?? []).filter((block) => block.type === "text").map((block) => block.text).join("") };
+    const text = (result?.content ?? []).filter((block) => block.type === "text").map((block) => block.text).join("");
+    return { result, events, text };
   }
 
   const seed = await turn("Remember ZEBRA_XYZZY. Reply ok.");
-  check("embedded alpha.5 DSH boots and streams", () => {
+  check("embedded 0.1.6-alpha.2 DSH boots and streams", () => {
     assert.equal(seed.result.stopReason, "stop");
     assert.ok(seed.events.indexOf("text_delta") >= 0 && seed.events.indexOf("text_delta") < seed.events.indexOf("done"));
   });
@@ -137,9 +138,9 @@ try {
     assert.equal(coldRecall.stopReason, "stop", coldRecall.errorMessage);
   });
   const switchedRoute = await coldTurn(coldSession, "mock-cold-b", "RECALL_TOKEN");
-  check("changing the native model route isolates the persisted session", () => {
+  check("changing the native model route preserves the persisted conversation", () => {
     assert.notEqual(coldSeed.routeFingerprint, switchedRoute.routeFingerprint);
-    assert.notEqual(switchedRoute.text, "COLD_ZEBRA");
+    assert.equal(switchedRoute.text, "COLD_ZEBRA");
   });
   const image = await turn([
     { type: "text", text: "IMAGE_TEST before" },
@@ -228,9 +229,22 @@ try {
   let transparentRegistration;
   let transparentSessionStart;
   const transparentSessionId = `transparent-${Date.now()}`;
+  const transparentBranch = [];
+  let transparentLeaf;
+  let transparentEntrySeq = 0;
+  const appendPrimeMessage = (role, content) => {
+    const id = `prime-entry-${++transparentEntrySeq}`;
+    transparentBranch.push({ type: "message", id, parentId: transparentLeaf, message: { role, content } });
+    transparentLeaf = id;
+    return id;
+  };
   const transparentCtx = {
     cwd: workspace, thinkingLevel: "off", hasUI: false,
-    sessionManager: { getSessionId: () => transparentSessionId },
+    sessionManager: {
+      getSessionId: () => transparentSessionId,
+      getBranch: () => transparentBranch,
+      getLeafId: () => transparentLeaf,
+    },
     modelRegistry: {
       getAll: () => [nativeModel], getProvider: () => nativeProvider,
       getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "not-a-vendor-key" }),
@@ -240,6 +254,11 @@ try {
     on(event, handler) { if (event === "session_start") transparentSessionStart = handler; },
     registerCommand() {}, unregisterProvider() {},
     registerProvider(name, config) { transparentRegistration = { name, config }; },
+    appendEntry(customType, data) {
+      const id = `prime-entry-${++transparentEntrySeq}`;
+      transparentBranch.push({ type: "custom", id, parentId: transparentLeaf, customType, data });
+      transparentLeaf = id;
+    },
   }, { dshBin: "unused", timeoutMs: 30_000, mode: "pool", poolMax: 2,
     poolIdleTtlMs: 60_000, fullAccess: false, transparent: true, mcpServers: [], persistentTerminal: false }, { dshHome: () => home, getNativeStream: () => nativeProvider.streamSimple });
   transparent.register();
@@ -250,25 +269,30 @@ try {
     assert.equal(transparentCtx.modelRegistry.getAll()[0].provider, "mock-local");
     assert.equal(transparentCtx.modelRegistry.getAll()[0].id, "mock-1");
   });
+  appendPrimeMessage("user", "Reply transparent-ok.");
   const transparentStream = transparentRegistration.config.streamSimple(nativeModel, {
     messages: [{ role: "user", content: "Reply transparent-ok.", timestamp: Date.now() }], tools: [],
   }, { sessionId: transparentCtx.sessionManager.getSessionId() });
   const transparentEvents = [];
   for await (const event of transparentStream) transparentEvents.push(event.type);
   const transparentResult = await transparentStream.result();
+  appendPrimeMessage("assistant", "transparent-ok");
   check("normal native selection executes through in-process DSH", () => {
     assert.equal(transparentResult.stopReason, "stop", transparentResult.errorMessage);
     assert.ok(transparentEvents.includes("text_delta"));
   });
 
   async function transparentTurn(content) {
+    appendPrimeMessage("user", content);
     const stream = transparentRegistration.config.streamSimple(nativeModel, {
       messages: [{ role: "user", content, timestamp: Date.now() }], tools: [],
     }, { sessionId: transparentCtx.sessionManager.getSessionId() });
     const events = [];
     for await (const event of stream) events.push(event.type);
     const result = await stream.result();
-    return { result, events, text: (result?.content ?? []).filter((block) => block.type === "text").map((block) => block.text).join("") };
+    const text = (result?.content ?? []).filter((block) => block.type === "text").map((block) => block.text).join("");
+    appendPrimeMessage("assistant", text);
+    return { result, events, text };
   }
   const transparentBefore = await stats();
   const transparentSkill = await transparentTurn("SKILL_PROBE load integration-probe through transparent routing.");

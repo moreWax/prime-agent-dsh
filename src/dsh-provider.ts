@@ -19,7 +19,10 @@ import {
   destroyAgent,
   getOrCreateAgent,
   runTurn,
+  selectPersistedBranch,
+  withDshSessionLock,
   type AgentEntry,
+  type AssistantStreamFrameShape,
   type SessionEventShape,
   type UserQuestionAnswerer,
 } from "./dsh-provider-host.js";
@@ -30,11 +33,22 @@ const PROVIDER_DISPLAY_NAME = "DeepSeek Harness";
 // Per-conversation runtime (mirrors pi-factory-droid's InstanceRuntime).
 // ---------------------------------------------------------------------------
 export interface TurnCompleteInfo {
-  /** Stable DSH conversation id (see conversationSessionId). */
   dshSessionId: string;
+  /** Exact inclusive seq of the durable turn/end event for this Prime turn. */
+  dshBoundarySeq: number;
   reason: "stop" | "incomplete";
   at: number;
   toolCalls: number;
+  primeSessionId?: string;
+  primeTurnEntryId?: string;
+}
+
+export interface BranchTarget {
+  primeSessionId: string;
+  primeTurnEntryId: string;
+  checkpoint?: { dshSessionId: string; dshBoundarySeq: number };
+  baseSessionId: string;
+  childSessionId?: string;
 }
 
 export interface InstanceRuntime {
@@ -50,6 +64,8 @@ export interface InstanceRuntime {
    * (e.g. into Prime's canonical session JSONL). Never throws into the stream.
    */
   onTurnComplete?: (info: TurnCompleteInfo) => void;
+  /** Resolve the active Prime tree path for every provider call. */
+  resolveBranchTarget?: () => BranchTarget;
   /** Stage 3: supply Prime's canonical transcript for resume seeding. */
   resolveSeed?: () => TranscriptMessage[] | Promise<TranscriptMessage[]>;
   /** Fired after Stage 3 rebuilt a DSH session from Prime's transcript. */
@@ -134,6 +150,7 @@ function streamDshPool(
 ): AssistantMessageEventStream {
   const stream = createAssistantMessageEventStream();
   const runtime = resolveCallRuntime(options, instanceRuntime);
+  const onTurnComplete = runtime.onTurnComplete;
 
   void (async () => {
     const output = createEmptyOutput(model);
@@ -154,25 +171,49 @@ function streamDshPool(
 
       const route = await runtime.resolveRoute?.(model, options);
       if (!route) throw new Error("Select a native Prime model before using the dsh provider");
-      const entry = await getOrCreateAgent(runtime.sessionKey, {
-        cwd: runtime.cwd,
-        route,
-        poolMax: cfg.poolMax,
-        idleTtlMs: cfg.poolIdleTtlMs,
-        fullAccess: cfg.fullAccess,
-        approvalAnswerer: runtime.approvalAnswerer,
-        userQuestionAnswerer: runtime.userQuestionAnswerer,
-        mcpServers: cfg.mcpServers,
-        persistentTerminal: cfg.persistentTerminal,
-        resumeSeed: cfg.resumeSeed,
-        seed: runtime.resolveSeed,
-        onRestored: runtime.onRestored,
-      });
-      entryRef = entry;
+      const branch = runtime.resolveBranchTarget?.();
+      const childSessionId = branch?.childSessionId;
+      if (branch?.checkpoint && !childSessionId) throw new Error("DSH branch target is missing its child session id");
+      const lockSessionId = branch?.checkpoint?.dshSessionId ?? branch?.baseSessionId ?? runtime.sessionKey;
       const translator = new TurnTranslator(output, stream);
 
       stream.push({ type: "start", partial: output });
-      await runTurn(entry, turn.content, options?.signal, (event) => translator.onEvent(event));
+      await withDshSessionLock(lockSessionId, async () => {
+        const selected = branch?.checkpoint
+          ? await selectPersistedBranch(
+              runtime.cwd,
+              cfg.fullAccess,
+              route,
+              branch.checkpoint.dshSessionId,
+              branch.checkpoint.dshBoundarySeq,
+              childSessionId!,
+            )
+          : { sessionId: branch?.baseSessionId };
+        const entry = await getOrCreateAgent(runtime.sessionKey, {
+          cwd: runtime.cwd,
+          route,
+          sessionId: selected.sessionId,
+          forkFrom: "forkFrom" in selected ? selected.forkFrom : undefined,
+          poolMax: cfg.poolMax,
+          idleTtlMs: cfg.poolIdleTtlMs,
+          fullAccess: cfg.fullAccess,
+          approvalAnswerer: runtime.approvalAnswerer,
+          userQuestionAnswerer: runtime.userQuestionAnswerer,
+          mcpServers: cfg.mcpServers,
+          persistentTerminal: cfg.persistentTerminal,
+          resumeSeed: cfg.resumeSeed,
+          seed: runtime.resolveSeed,
+          onRestored: runtime.onRestored,
+        });
+        entryRef = entry;
+        await runTurn(
+          entry,
+          turn.content,
+          options?.signal,
+          (event) => translator.onEvent(event),
+          (frame) => translator.onAssistantStream(frame),
+        );
+      });
 
       if (aborted || options?.signal?.aborted || translator.turnReason === "aborted") {
         // Abort preserves the pooled session (droid rule) — do NOT destroy.
@@ -214,13 +255,20 @@ function streamDshPool(
       stream.push({ type: "done", reason: "stop", message: output });
       stream.end();
       try {
-        instanceRuntime.onTurnComplete?.({
-          dshSessionId: entry.sessionId,
-          reason: "stop",
+        if (!entryRef || translator.turnEndSeq === undefined) {
+          throw new Error("DSH completed without a durable turn/end boundary");
+        }
+        onTurnComplete?.({
+          dshSessionId: entryRef.sessionId,
+          dshBoundarySeq: translator.turnEndSeq,
+          reason: translator.turnReason === "incomplete" ? "incomplete" : "stop",
           at: Date.now(),
           toolCalls: translator.toolCalls,
+          primeSessionId: branch?.primeSessionId,
+          primeTurnEntryId: branch?.primeTurnEntryId,
         });
       } catch {
+
         // Anchors must never break the provider stream.
       }
     } catch (error) {
@@ -255,8 +303,11 @@ class TurnTranslator {
    * execution and re-drive the turn (the infinite loop).
    */
   private readonly openToolThinking = new Map<string, number>();
+  /** Step identity for process-local DSH v3 assistant stream attempts. */
+  private readonly assistantStreamSteps = new Map<string, number>();
   turnReason: TurnOutcome = "stop";
   turnError: string | undefined;
+  turnEndSeq: number | undefined;
   /** Count of tool/call events translated this turn (for host anchors). */
   toolCalls = 0;
 
@@ -265,11 +316,25 @@ class TurnTranslator {
     private readonly stream: AssistantMessageEventStream,
   ) {}
 
+  onAssistantStream(frame: AssistantStreamFrameShape): void {
+    const key = `${frame.attemptId}\0${frame.revision}`;
+    if (frame.type === "start") {
+      this.assistantStreamSteps.set(key, typeof frame.step === "number" ? frame.step : 0);
+    } else if (frame.type === "chunk") {
+      this.onChunk(frame.chunk, this.assistantStreamSteps.get(key) ?? 0);
+    } else {
+      this.assistantStreamSteps.delete(key);
+    }
+  }
+
   onEvent(event: SessionEventShape): void {
+    // Retain compatibility with v0 session fixtures. DSH v3 delivers live
+    // chunks through agent/assistant-stream instead of durable session events.
     if (event.type === "assistant/chunk") {
       const data = event.data as { chunk?: unknown; step?: unknown } | undefined;
       this.onChunk(data?.chunk, typeof data?.step === "number" ? data.step : 0);
     } else if (event.type === "turn/end") {
+      this.turnEndSeq = event.seq;
       this.onTurnEnd((event.data as { reason?: unknown })?.reason);
     } else if (event.type === "tool/call") {
       this.toolCalls++;

@@ -9,7 +9,6 @@ test("embedded DSH work has conservative fixed fan-out and wait bounds", () => {
     workflowMaxTotalAgents: 16,
     workflowMaxItemsPerCall: 64,
     workflowSyncTimeoutMs: 2_000,
-    workflowDisposeGraceMs: 2_000,
     jobWaitTimeoutMs: 5_000,
     jobMaxWaitTimeoutMs: 30_000,
   });

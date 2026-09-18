@@ -1,3 +1,5 @@
+import { createAssistantMessage, createUserMessage } from "@deepseek-ai/dsh-llm";
+
 /**
  * Stage 3 — full-fidelity resume seeding.
  *
@@ -66,12 +68,20 @@ export function buildSeedEvents(messages: readonly TranscriptMessage[]): SeedLog
     if (message.role === "user") {
       events.push({
         type: "user/message",
-        data: { content: [{ type: "text", text: message.content }], source: { kind: "user" } },
+        data: createUserMessage({ content: [{ type: "text", text: message.content }], source: { kind: "user" } }),
       });
     } else {
       events.push({
         type: "assistant/message",
-        data: { turn: 0, step: 0, message: { content: [{ type: "text", text: message.content }], source: { provider: "external", model: "unknown" } } },
+        data: {
+          turn: 0,
+          step: 0,
+          message: createAssistantMessage({
+            content: [{ type: "text", text: message.content }],
+            source: { provider: "external", model: "unknown" },
+          }),
+          stream: [],
+        },
       });
     }
   }

@@ -1,7 +1,7 @@
 // src/dsh-host.ts — the ONLY module that imports @deepseek-ai/*.
 //
-// Single chokepoint over the unstable in-process DSH surface (0.1.2-alpha.5,
-// SESSION_FORMAT_VERSION 0, "no compatibility is implied"). Any dsh upgrade
+// Single chokepoint over the unstable in-process DSH surface (0.1.6-alpha.2,
+// SESSION_FORMAT_VERSION 3, "no compatibility is implied"). Any dsh upgrade
 // must re-run the plan-002 Phase 1–2 gates before bumping these pins.
 import { createHash } from "node:crypto";
 import { realpath } from "node:fs/promises";
@@ -11,7 +11,7 @@ import { boot, loadOverlayPatches } from "@deepseek-ai/dsh-app-boot";
 import { installModelSelection } from "@deepseek-ai/dsh-agent";
 import type { Agent, AgentHandle } from "@deepseek-ai/dsh-agent";
 import { createUserMessage, ReasoningEffortId, type ContentBlock } from "@deepseek-ai/dsh-llm";
-import { SessionId } from "@deepseek-ai/dsh-session";
+import { SessionId, SessionLogOffset, type SessionEvent } from "@deepseek-ai/dsh-session";
 import type { Context } from "@deepseek-ai/cordis";
 import type {} from "@deepseek-ai/dsh-agent-default-model";
 import type {} from "@deepseek-ai/dsh-session-persistence";
@@ -38,7 +38,6 @@ export const EMBEDDED_OPERATION_LIMITS = Object.freeze({
   workflowMaxTotalAgents: 16,
   workflowMaxItemsPerCall: 64,
   workflowSyncTimeoutMs: 2_000,
-  workflowDisposeGraceMs: 2_000,
   jobWaitTimeoutMs: 5_000,
   jobMaxWaitTimeoutMs: 30_000,
 });
@@ -54,10 +53,19 @@ export interface SessionEventShape {
   data: unknown;
 }
 
+/** Process-local assistant stream frame (not part of the durable session log in DSH v3). */
+export interface AssistantStreamFrameShape {
+  type: "start" | "chunk" | "end";
+  attemptId: string;
+  revision: number;
+  step?: number;
+  chunk?: unknown;
+}
+
 export interface AgentEntry extends PoolEntry {
   key: string;
   cwd: string;
-  /** Deterministic DSH session id (`pi-<sha256(key)>`), stable across processes. */
+  /** Explicit branch-selected durable DSH session id. */
   sessionId: string;
   lastUsedAt: number;
   idleTtlMs: number;
@@ -81,6 +89,27 @@ interface TreeState {
 }
 
 const trees = new Map<string, TreeState>();
+
+// Serializes every decision and turn that can mutate one persisted DSH session.
+// Pool keys include route/capability state, so the pool lock alone cannot stop
+// two Prime branches from concurrently observing and appending to the same SID.
+const sessionLocks = new Map<string, Promise<void>>();
+
+export async function withDshSessionLock<T>(sessionId: string, task: () => Promise<T>): Promise<T> {
+  const previous = sessionLocks.get(sessionId) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolveLock) => { release = resolveLock; });
+  const tail = previous.then(() => current);
+  sessionLocks.set(sessionId, tail);
+  await previous;
+  try {
+    return await task();
+  } finally {
+    release();
+    if (sessionLocks.get(sessionId) === tail) sessionLocks.delete(sessionId);
+  }
+}
+
 export type ApprovalAnswerer = (request: { toolName: string; reason?: string }) => Promise<boolean>;
 export type UserQuestionAnswerer = (request: AskUserQuestionRequest) => Promise<AskUserQuestionAnswer>;
 const approvalAnswerers = new WeakMap<Agent, ApprovalAnswerer>();
@@ -109,13 +138,12 @@ async function bootTree(workspaceRoot: string, fullAccess: boolean, route: Prepa
     provider: "spawn", toolName: "subagent", backgroundMode: "continuable",
     maxDepth: EMBEDDED_OPERATION_LIMITS.subagentMaxDepth,
   } });
-  patches.push({ id: "workflow-worker-thread", config: {
+  patches.push({ id: "workflow-ptc", config: {
     provider: "spawn",
     maxConcurrentAgents: EMBEDDED_OPERATION_LIMITS.workflowMaxConcurrentAgents,
     maxTotalAgents: EMBEDDED_OPERATION_LIMITS.workflowMaxTotalAgents,
     maxItemsPerCall: EMBEDDED_OPERATION_LIMITS.workflowMaxItemsPerCall,
     syncTimeoutMs: EMBEDDED_OPERATION_LIMITS.workflowSyncTimeoutMs,
-    disposeGraceMs: EMBEDDED_OPERATION_LIMITS.workflowDisposeGraceMs,
   } });
   patches.push({ id: "tool-jobs", config: {
     waitTimeoutMs: EMBEDDED_OPERATION_LIMITS.jobWaitTimeoutMs,
@@ -240,6 +268,10 @@ export function conversationSessionId(sessionKey: string): string {
 export interface AgentPoolOptions {
   cwd: string;
   route: PreparedPrimeRoute;
+  /** Explicit branch-selected durable DSH session identity. */
+  sessionId?: string;
+  /** Create sessionId from this exact persisted prefix when it does not exist. */
+  forkFrom?: { sessionId: string; boundarySeq: number };
   poolMax: number;
   idleTtlMs: number;
   fullAccess: boolean;
@@ -258,15 +290,60 @@ export function agentPoolKey(cwd: string, sessionKey: string, fullAccess: boolea
   return `${fullAccess ? "full" : "safe"}\0${cwd}\0${routeFingerprint}\0${sessionKey}`;
 }
 
+export interface PersistedBranchSelection {
+  sessionId: string;
+  forkFrom?: { sessionId: string; boundarySeq: number };
+}
+
+/**
+ * Compare a Prime checkpoint with durable DSH state. The read asks for one
+ * event beyond the inclusive boundary, which is enough to distinguish an
+ * unchanged source from one advanced by another Prime branch.
+ */
+export async function selectPersistedBranch(
+  cwd: string,
+  fullAccess: boolean,
+  route: PreparedPrimeRoute,
+  sourceSessionId: string,
+  boundarySeq: number,
+  childSessionId: string,
+): Promise<PersistedBranchSelection> {
+  if (!Number.isSafeInteger(boundarySeq) || boundarySeq < 0) throw new Error("Invalid DSH checkpoint boundary");
+  const canonical = await canonicalCwd(cwd);
+  const ctx = await getTree(canonical, fullAccess, route);
+  const persistence = ctx.get("sessionPersistence");
+  if (!persistence) throw new Error("[pi-dsh] DSH session persistence is unavailable");
+  const handle = await persistence.open(SessionId(sourceSessionId), "read");
+  try {
+    const { events } = await handle.read(0, boundarySeq + 2);
+    const boundary = events[boundarySeq];
+    if (!boundary || boundary.seq !== boundarySeq || boundary.type !== "turn/end") {
+      throw new Error(`DSH checkpoint ${sourceSessionId}@${boundarySeq} is not an exact turn/end boundary`);
+    }
+    return events.length === boundarySeq + 1
+      ? { sessionId: sourceSessionId }
+      : { sessionId: childSessionId, forkFrom: { sessionId: sourceSessionId, boundarySeq } };
+  } finally {
+    await handle.close();
+  }
+}
+
 export async function getOrCreateAgent(key: string, opts: AgentPoolOptions): Promise<AgentEntry> {
   ensureSweeper();
   const cwd = await canonicalCwd(opts.cwd);
   const capabilityFingerprint = createHash("sha256").update(JSON.stringify({
     mcpServers: opts.mcpServers, persistentTerminal: opts.persistentTerminal,
   })).digest("hex");
-  const isolatedKey = `${agentPoolKey(cwd, key, opts.fullAccess, opts.route.fingerprint)}\0${capabilityFingerprint}`;
-  // The persisted conversation id is stable across cwd/model/mode changes.
-  const sid = conversationSessionId(key);
+  const sid = opts.sessionId ?? conversationSessionId(key);
+  const isolatedKey = `${agentPoolKey(cwd, sid, opts.fullAccess, opts.route.fingerprint)}\0${capabilityFingerprint}`;
+  // A DSH persisted session has one live writer. Route/cwd/capability changes
+  // produce another isolated pool key, so retire an idle owner of this exact
+  // SID before trying to resume it under the new runtime composition.
+  for (const candidate of [...pool.values()]) {
+    if (candidate.sessionId === sid && candidate.key !== isolatedKey && candidate.activeUses === 0) {
+      await pool.remove(candidate);
+    }
+  }
   const entry = await pool.acquire(isolatedKey, opts.poolMax, async () => {
     const ctx = await getTree(cwd, opts.fullAccess, opts.route);
     const agents = ctx.get("agents");
@@ -277,9 +354,19 @@ export async function getOrCreateAgent(key: string, opts: AgentPoolOptions): Pro
     }
     const target = { provider: opts.route.provider, model: opts.route.model,
       ...(opts.route.reasoningEffort ? { reasoningEffort: ReasoningEffortId(opts.route.reasoningEffort) } : {}) };
-    const persisted = await persistence.list()
-      .then((headers) => headers.some((header) => header.id === sid))
-      .catch(() => false);
+    const persisted = Boolean(await persistence.stat(SessionId(sid)));
+    if (persisted && opts.forkFrom) {
+      const existing = await persistence.open(SessionId(sid), "read");
+      try {
+        if (existing.header.parentSession !== opts.forkFrom.sessionId
+          || existing.header.isSeeded !== true
+          || existing.inheritedEventCount !== opts.forkFrom.boundarySeq + 1) {
+          throw new Error(`Existing DSH fork ${sid} does not match ${opts.forkFrom.sessionId}@${opts.forkFrom.boundarySeq}`);
+        }
+      } finally {
+        await existing.close();
+      }
+    }
     const makeOptions = () => ({
       agentOptions: target,
       setup: async (agentCtx: Context): Promise<void> => {
@@ -300,10 +387,33 @@ export async function getOrCreateAgent(key: string, opts: AgentPoolOptions): Pro
         }
       },
     });
+    let forkSeed: readonly SessionEvent[] | undefined;
+    if (!persisted && opts.forkFrom) {
+      const source = await persistence.open(SessionId(opts.forkFrom.sessionId), "read");
+      try {
+        const expected = opts.forkFrom.boundarySeq + 1;
+        const read = await source.read(0, expected);
+        const boundary = read.events.at(-1);
+        if (read.events.length !== expected || boundary?.seq !== opts.forkFrom.boundarySeq || boundary.type !== "turn/end") {
+          throw new Error(`Cannot fork DSH session ${opts.forkFrom.sessionId}: invalid boundary ${opts.forkFrom.boundarySeq}`);
+        }
+        forkSeed = read.events;
+      } finally {
+        await source.close();
+      }
+    }
     const handle = persisted
       ? await agents.resume({ resumeSessionId: SessionId(sid), ...makeOptions() })
-      : await agents.create({ sessionId: SessionId(sid), meta: { cwd }, ...makeOptions() });
-    if (!persisted && opts.resumeSeed && opts.seed) {
+      : forkSeed
+        ? await agents.create({
+            sessionId: SessionId(sid),
+            seed: forkSeed,
+            inheritedEventCount: SessionLogOffset(forkSeed.length),
+            meta: { cwd, parentSession: SessionId(opts.forkFrom!.sessionId), isSeeded: true },
+            ...makeOptions(),
+          })
+        : await agents.create({ sessionId: SessionId(sid), meta: { cwd }, ...makeOptions() });
+    if (!persisted && !forkSeed && opts.resumeSeed && opts.seed) {
       // Stage 3 (best-effort): rebuild from Prime's canonical transcript so a
       // resumed conversation whose DSH session was evicted continues with its
       // history instead of starting blank. Never fatal.
@@ -321,10 +431,7 @@ export async function getOrCreateAgent(key: string, opts: AgentPoolOptions): Pro
     await handle.agent.whenIdle();
     // Standard DSH presets already mount this. Custom/minimal presets may not;
     // mount it in the agent realm only when the registry lacks it.
-    // Cordis' dynamic service lookup is intentionally untyped at this boundary.
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     const tools = handle.agent.ctx.get("tools");
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
     if (!tools?.get("ask_user_question", handle.agent)) mountAskUserTool(handle.agent.ctx);
     return {
       key: isolatedKey, cwd, sessionId: sid, lastUsedAt: Date.now(),
@@ -346,7 +453,8 @@ export async function destroyAgent(entry: AgentEntry): Promise<void> {
  * Drive one turn: admit ordered multimodal content, subscribe the event firehose,
  * wait for quiescence, and flush the session to persistence (so a later
  * cross-process resume sees the whole log). `onEvent` fires synchronously per
- * session event. On `signal` abort the active turn is cancelled WITHOUT
+ * durable session event; `onAssistantStream` receives the process-local v3
+ * model stream. On `signal` abort the active turn is cancelled WITHOUT
  * destroying the entry (droid rule: abort preserves the session). Turns on one
  * entry are serialized.
  */
@@ -355,6 +463,7 @@ export async function runTurn(
   content: readonly PrimeTurnContent[],
   signal: AbortSignal | undefined,
   onEvent: (event: SessionEventShape) => void,
+  onAssistantStream: (frame: AssistantStreamFrameShape) => void,
 ): Promise<void> {
   const { agent } = entry;
 
@@ -362,6 +471,7 @@ export async function runTurn(
     await agent.whenIdle();
 
     let unsub: (() => void) | undefined;
+    let unsubAssistantStream: (() => void) | undefined;
     const abortHandler = (): void => {
       try {
         agent.cancel({ kind: "user" });
@@ -375,6 +485,11 @@ export async function runTurn(
         if (session?.id !== agent.session.id) return;
         pool.touch(entry);
         onEvent({ type: event.type, seq: event.seq, data: event.data });
+      });
+      unsubAssistantStream = agent.ctx.on("agent/assistant-stream", ({ agent: subject, frame }) => {
+        if (subject !== agent) return;
+        pool.touch(entry);
+        onAssistantStream(frame);
       });
       if (signal) {
         if (signal.aborted) abortHandler();
@@ -393,6 +508,7 @@ export async function runTurn(
       await agent.whenIdle();
     } finally {
       unsub?.();
+      unsubAssistantStream?.();
       if (signal) signal.removeEventListener("abort", abortHandler);
       // Persist this turn so cross-process resume keeps the full history.
       try {

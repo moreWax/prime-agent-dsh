@@ -14,6 +14,13 @@ import { bindSessionRuntime, createInstanceRuntime, registerProvider } from "../
 import { TransparentProviderController } from "../src/transparent-provider.js";
 import { createPrimeUserQuestionAnswerer, rejectHeadlessUserQuestion } from "../src/prime-user-questions.js";
 import { dshCapabilityRegistry, formatDshCapabilities } from "../src/dsh-capabilities.js";
+import {
+  DSH_CHECKPOINT_CUSTOM_TYPE,
+  deriveBaseDshSessionId,
+  deriveForkedDshSessionId,
+  findLatestPrimeUserEntryId,
+  findNearestDshBranchCheckpoint,
+} from "../src/dsh-branch-checkpoint.js";
 
 interface DshDetails {
   sessionId: string;
@@ -153,7 +160,8 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
   });
   pi.on("session_start", async (_event, ctx) => {
     await Promise.resolve();
-    providerRuntime.cwd = ctx.cwd;
+    const sessionRuntime = createInstanceRuntime();
+    sessionRuntime.cwd = ctx.cwd;
     selectNative(ctx.model as Model<Api> | undefined);
     if (!lastNativeModel) {
       // A resumed session can start while `dsh` is selected. Recover the most
@@ -167,19 +175,55 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
       }
     }
     lastThinkingLevel = ctx.thinkingLevel;
-    providerRuntime.resolveRoute = () => resolveProviderRoute(ctx);
+    sessionRuntime.resolveRoute = () => resolveProviderRoute(ctx);
     const sessionId = ctx.sessionManager.getSessionId?.() ?? ctx.cwd;
-    providerRuntime.sessionKey = sessionId;
-    providerRuntime.approvalAnswerer = ctx.hasUI
+    sessionRuntime.sessionKey = sessionId;
+    sessionRuntime.resolveBranchTarget = () => {
+      const branch = ctx.sessionManager.getBranch() as unknown[];
+      const primeTurnEntryId = findLatestPrimeUserEntryId(branch);
+      if (!primeTurnEntryId) throw new Error("Cannot resolve the persisted Prime user turn for DSH");
+      const found = findNearestDshBranchCheckpoint(branch);
+      const checkpoint = found?.primeSessionId === sessionId ? found : undefined;
+      return {
+        primeSessionId: sessionId,
+        primeTurnEntryId,
+        baseSessionId: deriveBaseDshSessionId(sessionId, primeTurnEntryId),
+        ...(checkpoint ? {
+          checkpoint: { dshSessionId: checkpoint.dshSessionId, dshBoundarySeq: checkpoint.dshBoundarySeq },
+          childSessionId: deriveForkedDshSessionId(sessionId, primeTurnEntryId, checkpoint.dshSessionId, checkpoint.dshBoundarySeq),
+        } : {}),
+      };
+    };
+    sessionRuntime.onTurnComplete = (info) => {
+      try {
+        if (!info.primeSessionId || !info.primeTurnEntryId) return;
+        if (ctx.sessionManager.getSessionId?.() !== info.primeSessionId) return;
+        if (ctx.sessionManager.getLeafId?.() !== info.primeTurnEntryId) return;
+        pi.appendEntry(DSH_CHECKPOINT_CUSTOM_TYPE, {
+          version: 1,
+          primeSessionId: info.primeSessionId,
+          primeTurnEntryId: info.primeTurnEntryId,
+          dshSessionId: info.dshSessionId,
+          dshBoundarySeq: info.dshBoundarySeq,
+          outcome: info.reason,
+        });
+      } catch (error) {
+        ctx.ui?.notify?.(
+          `DSH checkpoint could not be persisted; do not continue this branch: ${error instanceof Error ? error.message : String(error)}`,
+          "error",
+        );
+      }
+    };
+    sessionRuntime.approvalAnswerer = ctx.hasUI
       ? ({ toolName, reason }) => ctx.ui.confirm(
           `DSH permission: ${toolName}`,
           reason ?? "Allow this operation once outside the workspace sandbox?",
         )
       : undefined;
-    providerRuntime.userQuestionAnswerer = ctx.hasUI
+    sessionRuntime.userQuestionAnswerer = ctx.hasUI
       ? createPrimeUserQuestionAnswerer(ctx.ui)
       : rejectHeadlessUserQuestion;
-    bindSessionRuntime(sessionId, providerRuntime);
+    bindSessionRuntime(sessionId, sessionRuntime);
     if (ctx.hasUI) {
       const messages = committedMessages(ctx);
       const modelLabel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "none";

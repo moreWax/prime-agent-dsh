@@ -32,7 +32,11 @@ test("buildSeedEvents mirrors the agent-log append contract", () => {
   assert.equal(events[0]?.type, "user/message");
   assert.equal((events[0]?.data as { content: Array<{ text: string }> }).content[0]?.text, "hello");
   assert.equal(events[1]?.type, "assistant/message");
-  assert.equal((events[1]?.data as { turn: number; step: number }).turn, 0);
+  const assistant = events[1]?.data as { turn: number; step: number; stream: unknown[]; message: { role: string; source: { kind: string } } };
+  assert.equal(assistant.turn, 0);
+  assert.deepEqual(assistant.stream, []);
+  assert.equal(assistant.message.role, "assistant");
+  assert.equal(assistant.message.source.kind, "model");
 });
 
 test("seedSession appends events in order and reports the count", () => {

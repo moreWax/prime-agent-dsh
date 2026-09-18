@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Api, AssistantMessageEventStream, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, ProviderConfig } from "@earendil-works/pi-coding-agent";
-import { fallbackOnDshFailure, TransparentProviderController } from "../src/transparent-provider.js";
+import { fallbackOnDshFailure, isPrimeRefinementContext, TransparentProviderController } from "../src/transparent-provider.js";
 
 const model: Model<Api> = { id: "m", name: "Model", provider: "native", api: "openai-completions", baseUrl: "http://localhost", reasoning: false, input: ["text"], contextWindow: 1000, maxTokens: 100, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
 const cfg = { dshBin: "dsh", timeoutMs: 1, mode: "pool" as const, poolMax: 1, poolIdleTtlMs: 1, fullAccess: false, mcpServers: [], persistentTerminal: false, resumeSeed: false };
@@ -102,4 +102,27 @@ test("startup/reload never captures or stacks an old wrapper", () => {
   assert.notEqual(f.registrations[0][1].streamSimple, f.nativeStream);
   assert.notEqual(f.registrations[1][1].streamSimple, f.registrations[0][1].streamSimple);
   assert.equal(f.nativeCalls, 0);
+});
+
+
+test("Prime refinement and auto-refine requests bypass the persistent DSH conversation", () => {
+  assert.equal(isPrimeRefinementContext({ systemPrompt: "You are Prime Agent's /refine continual harness subsystem.\nJSON only." }), true);
+  assert.equal(isPrimeRefinementContext({ systemPrompt: "You are Prime Agent's automatic /refine review gate.\nJSON only." }), true);
+  assert.equal(isPrimeRefinementContext({ systemPrompt: "normal user agent prompt" }), false);
+});
+
+
+test("transparent dispatch sends Prime refinement directly to the native provider", async () => {
+  const f = fixture();
+  f.controller.register();
+  await f.handlers.get("session_start")?.[0]?.({} as never, f.ctx);
+  const streamSimple = f.registrations.at(-1)?.[1].streamSimple;
+  assert.equal(typeof streamSimple, "function");
+  const result = streamSimple!(model, {
+    systemPrompt: "You are Prime Agent's /refine continual harness subsystem.",
+    messages: [{ role: "user", content: "return JSON", timestamp: Date.now() }],
+    tools: [],
+  }, { sessionId: "s" });
+  assert.deepEqual(result, {});
+  assert.equal(f.nativeCalls, 1);
 });

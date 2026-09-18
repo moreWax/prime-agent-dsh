@@ -1,6 +1,6 @@
 # DSH inference-context service — Phase 0
 
-A deliberately small, **non-agent-loop** sidecar that accepts an authoritative transcript snapshot and projects the canonical model message context. It uses the public `@deepseek-ai/dsh-session` and `@deepseek-ai/dsh-llm` packages at `0.1.2-alpha.5` (and Cordis `4.0.2`).
+A deliberately small, **non-agent-loop** sidecar that accepts an authoritative transcript snapshot and projects the canonical model message context. It uses the public `@deepseek-ai/dsh-session` and `@deepseek-ai/dsh-llm` packages at `0.1.6-alpha.2` (and Cordis `4.0.2`).
 
 ## Run
 
