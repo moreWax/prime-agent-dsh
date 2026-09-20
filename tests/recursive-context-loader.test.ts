@@ -53,7 +53,7 @@ test("recursive loader isolates root and RLM child scopes", async () => {
         commonPrefixMessages: 0,
         metrics: { assistantMessages: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0 },
         digest: "a".repeat(64),
-        snapshot: "snapshots/a.json",
+        snapshot: `objects/${"a".repeat(64)}.json`,
       },
     };
   });

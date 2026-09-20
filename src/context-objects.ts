@@ -2,29 +2,14 @@ import { closeSync, chmodSync, constants, fsyncSync, lstatSync, mkdirSync, openS
 import { createHash, randomBytes } from "node:crypto";
 import { dirname, join, sep } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Message } from "@deepseek-ai/dsh-llm";
 import { primeToDshAsync, type PrimeEnvelope, type PrimeMessage } from "./context-converter.js";
 import { DurableContextStore, type PublishResult } from "./durable-context-store.js";
-import type { ContextSpillLocator } from "./context-spill.js";
 import { stableJson } from "./prefix-metrics.js";
 import { LocalDshImageAttachments, type DshImageAttachmentGateway } from "./dsh-image-attachments.js";
 
 export const CONTEXT_OBJECT_VERSION = "prime-agent-dsh/context-object-v1" as const;
 
 type JsonObject = Record<string, unknown>;
-
-export interface ContextObjectEntry {
-  readonly index: number;
-  readonly id?: string;
-  readonly parentId?: string | null;
-  readonly entryType: string;
-  readonly role?: string;
-  readonly customType?: string;
-  readonly text: string;
-  readonly truncated: boolean;
-  /** Verified durable full text when the compatibility body is oversized. */
-  readonly contextSpill?: ContextSpillLocator;
-}
 
 export interface ContextObjectMetrics {
   readonly assistantMessages: number;
@@ -33,19 +18,6 @@ export interface ContextObjectMetrics {
   readonly cacheReadTokens: number;
   readonly cacheWriteTokens: number;
   readonly totalTokens: number;
-}
-
-export interface ContextObjectSnapshot {
-  readonly version: typeof CONTEXT_OBJECT_VERSION;
-  readonly sessionId: string;
-  /** Exact Prime leaf observed for this immutable view. */
-  readonly branchId: string;
-  readonly revision: number;
-  readonly messageCount: number;
-  readonly entries: readonly ContextObjectEntry[];
-  readonly messages: readonly Message[];
-  readonly metrics: ContextObjectMetrics;
-  readonly cropped: boolean;
 }
 
 export interface ContextObjectManifest {
@@ -62,7 +34,7 @@ export interface ContextObjectManifest {
   readonly metrics: ContextObjectMetrics;
   /** Digest of the immutable derived object. */
   readonly digest: string;
-  /** Backward-compatible path to the current immutable derived object. */
+  /** Path to the current immutable v3 reference object. */
   readonly snapshot: string;
   readonly commit?: string;
   readonly sourceDigest?: string;
@@ -208,7 +180,7 @@ export class ContextObjectStore {
     const immutableManifest = join(root, `manifest-${branchKey}-${published.commitDigest}.json`);
     if (!lstatExists(immutableManifest)) atomicPrivateWrite(immutableManifest, `${JSON.stringify(manifest)}\n`);
     atomicPrivateWrite(join(root, `manifest-${branchKey}.json`), `${JSON.stringify(manifest)}\n`);
-    // Compatibility pointer only. Authoritative readers pass an immutable digest or expected branch.
+    // Current-view pointer only. Authoritative readers pass an immutable digest or expected branch.
     atomicPrivateWrite(join(root, "manifest.json"), `${JSON.stringify(manifest)}\n`);
     return { manifest, root };
   }

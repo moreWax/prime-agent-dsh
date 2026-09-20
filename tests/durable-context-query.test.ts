@@ -63,7 +63,7 @@ test("corrupt checkpoints are isolated and all query bounds are enforced", async
   assert.throws(() => query.query({ query: "a" }), /scan exceeds/);
 });
 
-test("v2 source search resolves exact immutable bodies", async () => {
+test("v3 source search resolves verified Prime records", async () => {
   const f = await fixture(); await f.publish([{ text: "source needle" }], "main");
   const query = new DurableContextQuery({ root: f.root, sessionId: "only-this", primeSessionFile: f.session });
   const hit = query.query({ query: "needle", scope: "source" }).hits[0];

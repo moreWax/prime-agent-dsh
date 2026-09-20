@@ -75,7 +75,7 @@ test("context objects mirror Prime without changing its messages", async () => {
   const stored = JSON.parse(await readFile(join(appended.root, appended.manifest.snapshot), "utf8"));
   assert.equal(stored.version, "prime-agent-dsh/derived-object-v3-reference");
   const snapshot = stored.compatibility;
-  assert.equal(snapshot.version, "prime-agent-dsh/durable-store-v1");
+  assert.equal(snapshot.version, "prime-agent-dsh/durable-store-v3-reference");
   assert.equal(snapshot.messages, undefined);
   assert.equal(stored.effective, undefined);
   assert.equal(stored.effectiveEntryDigests.length, 3);

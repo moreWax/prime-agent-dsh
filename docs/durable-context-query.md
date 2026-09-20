@@ -30,6 +30,5 @@ and extractor version. It must never become query or recovery authority.
   restart because their authority is immutable commits, not process memory.
 - Checkpoint count, query bytes, scanned entries, page size, and cursor bytes
   have explicit bounds.
-- V3 source hits are dereferenced from the bound Prime JSONL and verify locator, ID, and digest. Effective hits are reconstructed only when a source mapping exists; `trace.exactBody` says whether reconstruction is byte-semantically exact. Legacy source hits use the store's bounded
-  compatibility rendering and are marked `exactBody: false`; their provenance
-  still carries the exact source-entry digest.
+- V3 source hits are dereferenced from the bound Prime JSONL and verify locator, ID, and digest. Effective hits are reconstructed only when a source mapping exists; `trace.exactBody` says whether reconstruction is byte-semantically exact.
+- V3-reference is the sole supported derived-store format. Old cache schemas are discarded and rebuilt from Prime JSONL, not migrated or maintained.

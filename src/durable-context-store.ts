@@ -5,10 +5,8 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
-export const DURABLE_STORE_VERSION = "prime-agent-dsh/durable-store-v1" as const;
+export const DURABLE_STORE_VERSION = "prime-agent-dsh/durable-store-v3-reference" as const;
 export const DURABLE_OBJECT_VERSION = "prime-agent-dsh/derived-object-v3-reference" as const;
-export const PREVIOUS_DURABLE_OBJECT_VERSION = "prime-agent-dsh/derived-object-v2" as const;
-export const LEGACY_DURABLE_OBJECT_VERSION = "prime-agent-dsh/derived-object-v1" as const;
 export const DURABLE_COMMIT_VERSION = "prime-agent-dsh/derived-commit-v1" as const;
 const SHA256 = /^[a-f0-9]{64}$/;
 
@@ -26,19 +24,11 @@ export interface PublishInput {
   readonly effective: readonly unknown[];
   readonly converterVersion: string;
   readonly schemaVersion: string;
-  /** Optional bounded records used only by the backward-compatible reader view. */
-  readonly compatibilityEntries?: readonly unknown[];
   readonly compatibilityMetrics?: Readonly<Record<string, number>>;
   readonly cropped?: boolean;
   /** Optional exact leaf identifier for diagnostic/compatibility views. */
   readonly branchId?: string;
   readonly observedAt?: number;
-}
-export interface CompatibilityEntry {
-  readonly index: number;
-  readonly text: string;
-  readonly truncated: boolean;
-  readonly [field: string]: Json;
 }
 export interface CompatibilityView {
   readonly version: typeof DURABLE_STORE_VERSION;
@@ -46,8 +36,7 @@ export interface CompatibilityView {
   readonly branchId: string;
   readonly revision: number;
   readonly messageCount: number;
-  readonly entries: readonly CompatibilityEntry[];
-  readonly messages: readonly Json[];
+  readonly entries: readonly [];
   readonly cropped: boolean;
   readonly sourceDigest: string;
   readonly effectiveDigest: string;
@@ -69,17 +58,15 @@ export interface EffectiveReference {
   readonly role?: string;
 }
 export interface DerivedObject {
-  readonly version: typeof DURABLE_OBJECT_VERSION | typeof PREVIOUS_DURABLE_OBJECT_VERSION | typeof LEGACY_DURABLE_OBJECT_VERSION;
+  readonly version: typeof DURABLE_OBJECT_VERSION;
   readonly bindingDigest: string;
   readonly sourceDigest: string;
   readonly effectiveDigest: string;
   readonly sourceEntryDigests: readonly string[];
   readonly effectiveEntryDigests: readonly string[];
-  readonly sourceLocators?: readonly SourceLocator[];
-  readonly effectiveReferences?: readonly EffectiveReference[];
-  /** Present only in legacy v1 objects. V2 resolves entries from immutable bodies. */
-  readonly effective?: readonly Json[];
-  readonly compatibility: Omit<CompatibilityView, "messages"> & { readonly messages?: readonly Json[] };
+  readonly sourceLocators: readonly SourceLocator[];
+  readonly effectiveReferences: readonly EffectiveReference[];
+  readonly compatibility: CompatibilityView;
 }
 export interface DerivedCommit {
   readonly version: typeof DURABLE_COMMIT_VERSION;
@@ -106,8 +93,6 @@ export interface DurableContextStoreOptions {
   readonly root: string;
   readonly binding: StoreBinding;
   readonly recoveryScanLimit?: number;
-  readonly maxEntries?: number;
-  readonly maxEntryBytes?: number;
   readonly maxObjectBytes?: number;
   readonly lockTimeoutMs?: number;
   readonly staleLockMs?: number;
@@ -245,8 +230,6 @@ export class DurableContextStore {
   readonly binding: Readonly<StoreBinding & { primeSessionFile: string }>;
   readonly bindingDigest: string;
   private readonly scanLimit: number;
-  private readonly maxEntries: number;
-  private readonly maxEntryBytes: number;
   private readonly maxObjectBytes: number;
   private readonly lockTimeout: number;
   private readonly staleLock: number;
@@ -266,39 +249,65 @@ export class DurableContextStore {
     this.binding = Object.freeze({ sessionId: options.binding.sessionId, primeSessionFile: sessionFile });
     this.bindingDigest = digest({ sessionId: this.binding.sessionId, primeSessionFile: sessionFile });
     this.scanLimit = options.recoveryScanLimit ?? 128;
-    this.maxEntries = options.maxEntries ?? 2_000;
-    this.maxEntryBytes = options.maxEntryBytes ?? 64 * 1024;
     this.maxObjectBytes = options.maxObjectBytes ?? 16 * 1024 * 1024;
     this.lockTimeout = options.lockTimeoutMs ?? 10_000;
     this.staleLock = options.staleLockMs ?? 120_000;
     this.fault = options.fault; this.now = options.now ?? Date.now;
-    if (![this.scanLimit, this.maxEntries, this.maxEntryBytes, this.maxObjectBytes, this.lockTimeout, this.staleLock].every((v) => Number.isSafeInteger(v) && v > 0)) throw new Error("store limits must be positive integers");
+    if (![this.scanLimit, this.maxObjectBytes, this.lockTimeout, this.staleLock].every((v) => Number.isSafeInteger(v) && v > 0)) throw new Error("store limits must be positive integers");
     this.initialize();
   }
 
   private initialize(): void {
     privateDirectory(this.root);
+    if (this.needsSchemaReset()) this.resetDerivedCache();
     for (const name of ["objects", "commits", "heads", "quarantine"]) privateDirectory(join(this.root, name));
-    // The legacy bodies directory is read when present, but reference-only roots never create it.
     const bindingPath = join(this.root, "BINDING");
     const value = `${canonical({ version: DURABLE_STORE_VERSION, ...this.binding, bindingDigest: this.bindingDigest })}\n`;
     if (existsSync(bindingPath)) {
-      const stat = lstatSync(bindingPath); if (!stat.isFile() || stat.isSymbolicLink() || readFileSync(bindingPath, "utf8") !== value) throw new Error("durable store is bound to another Prime session");
+      const stat = lstatSync(bindingPath);
+      if (!stat.isFile() || stat.isSymbolicLink() || readFileSync(bindingPath, "utf8") !== value) {
+        throw new Error("durable store is bound to another Prime session");
+      }
     } else atomicWrite(bindingPath, value, false);
+  }
+
+  /** Unsupported derived schemas are disposable caches. User artifacts and grants are never touched. */
+  private needsSchemaReset(): boolean {
+    const bindingPath = join(this.root, "BINDING");
+    if (existsSync(bindingPath)) {
+      try {
+        const binding = object(parseJson(bindingPath));
+        if (binding?.version !== DURABLE_STORE_VERSION) return true;
+      } catch { return true; }
+    }
+    const objectsPath = join(this.root, "objects");
+    if (!existsSync(objectsPath)) return false;
+    try {
+      for (const name of requireDirectory(objectsPath)) {
+        if (!/^[a-f0-9]{64}\.json$/.test(name)) continue;
+        try { if (object(parseJson(join(objectsPath, name)))?.version !== DURABLE_OBJECT_VERSION) return true; }
+        catch { /* normal recovery skips corrupt current-schema cache objects */ }
+      }
+    } catch { return true; }
+    return false;
+  }
+
+  private resetDerivedCache(): void {
+    for (const name of ["heads", "commits", "objects", "bodies", "snapshots", "indexes"]) {
+      rmSync(join(this.root, name), { recursive: true, force: true });
+    }
+    for (const name of requireDirectory(this.root)) {
+      if (name === "BINDING" || name === "CURRENT" || name === "index.json" || name === "index.sqlite"
+        || name === "manifest.json" || /^manifest-[A-Za-z0-9._-]+\.json$/.test(name)) {
+        rmSync(join(this.root, name), { recursive: true, force: true });
+      }
+    }
+    syncDirectory(this.root);
   }
 
   private currentCandidate(): string | undefined {
     const path = join(this.root, "CURRENT");
     try { const value = safeFileText(path).trim(); return SHA256.test(value) ? value : undefined; } catch { return undefined; }
-  }
-  private readBody(bodyDigest: string): Json {
-    if (!SHA256.test(bodyDigest)) throw new Error("invalid durable body digest");
-    const path = join(this.root, "bodies", `${bodyDigest}.json`); assertChild(this.root, path);
-    const raw = safeFileText(path).trim();
-    if (createHash("sha256").update(raw).digest("hex") !== bodyDigest) throw new Error("durable body digest mismatch");
-    const value = JSON.parse(raw) as unknown;
-    if (digest(value) !== bodyDigest) throw new Error("non-canonical durable body");
-    return value as Json;
   }
 
   private validate(commitDigest: string): RecoveredGeneration | undefined {
@@ -317,63 +326,47 @@ export class DurableContextStore {
       const objectRaw = safeFileText(objectPath).trim();
       if (createHash("sha256").update(objectRaw).digest("hex") !== c.object) return undefined;
       const o = object(JSON.parse(objectRaw));
-      if (!o || (o.version !== DURABLE_OBJECT_VERSION && o.version !== PREVIOUS_DURABLE_OBJECT_VERSION && o.version !== LEGACY_DURABLE_OBJECT_VERSION)
-        || o.bindingDigest !== this.bindingDigest || o.sourceDigest !== c.sourceDigest || o.effectiveDigest !== c.effectiveDigest
+      if (!o || o.version !== DURABLE_OBJECT_VERSION || o.bindingDigest !== this.bindingDigest
+        || o.sourceDigest !== c.sourceDigest || o.effectiveDigest !== c.effectiveDigest
         || !Array.isArray(o.sourceEntryDigests) || !Array.isArray(o.effectiveEntryDigests) || !object(o.compatibility)) return undefined;
       const sourceEntryDigests = o.sourceEntryDigests as unknown[];
       const effectiveEntryDigests = o.effectiveEntryDigests as unknown[];
       if (!sourceEntryDigests.every((item) => typeof item === "string" && SHA256.test(item))
         || !effectiveEntryDigests.every((item) => typeof item === "string" && SHA256.test(item))) return undefined;
-      let effective: Json[];
-      if (o.version === LEGACY_DURABLE_OBJECT_VERSION) {
-        if (!Array.isArray(o.effective) || digest(o.effective) !== o.effectiveDigest || effectiveEntryDigests.length !== o.effective.length
-          || o.effective.some((item, index) => digest(item) !== effectiveEntryDigests[index])) return undefined;
-        effective = o.effective as Json[];
-      } else if (o.version === PREVIOUS_DURABLE_OBJECT_VERSION) {
-        if ("effective" in o) return undefined;
-        const source = sourceEntryDigests.map((item) => this.readBody(item as string));
-        effective = effectiveEntryDigests.map((item) => this.readBody(item as string));
-        if (digest(source) !== o.sourceDigest || digest(effective) !== o.effectiveDigest) return undefined;
-      } else {
-        if ("effective" in o || !Array.isArray(o.sourceLocators) || !Array.isArray(o.effectiveReferences)
-          || o.sourceLocators.length !== sourceEntryDigests.length || o.effectiveReferences.length !== effectiveEntryDigests.length) return undefined;
-        const file = readFileSync(this.binding.primeSessionFile);
-        const source: Json[] = [];
-        for (let index = 0; index < o.sourceLocators.length; index++) {
-          const locator = object(o.sourceLocators[index]);
-          if (!locator || locator.index !== index || !Number.isSafeInteger(locator.byteOffset) || (locator.byteOffset as number) < 0
-            || !safeInteger(locator.byteLength) || !safeInteger(locator.line) || locator.entryDigest !== sourceEntryDigests[index]
-            || (locator.entryId !== undefined && typeof locator.entryId !== "string")) return undefined;
-          const start = Number(locator.byteOffset), end = start + Number(locator.byteLength);
-          if (end > file.length || (start > 0 && file[start - 1] !== 0x0a)
-            || (end < file.length && file[end] !== 0x0a && !(file[end] === 0x0d && file[end + 1] === 0x0a))) return undefined;
-          const value = JSON.parse(file.subarray(start, end).toString("utf8")) as Json;
-          if (digest(value) !== locator.entryDigest) return undefined;
-          const valueId = object(value)?.id;
-          if (locator.entryId !== undefined && valueId !== locator.entryId) return undefined;
-          source.push(value);
-        }
-        if (digest(source) !== o.sourceDigest) return undefined;
-        for (let index = 0; index < o.effectiveReferences.length; index++) {
-          const reference = object(o.effectiveReferences[index]);
-          if (!reference || reference.entryDigest !== effectiveEntryDigests[index]
-            || (reference.sourceIndex !== null && (!Number.isSafeInteger(reference.sourceIndex) || (reference.sourceIndex as number) < 0 || (reference.sourceIndex as number) >= source.length))
-            || (reference.role !== undefined && typeof reference.role !== "string")) return undefined;
-        }
-        effective = new Array(effectiveEntryDigests.length).fill(null) as Json[];
+      if ("effective" in o || !Array.isArray(o.sourceLocators) || !Array.isArray(o.effectiveReferences)
+        || o.sourceLocators.length !== sourceEntryDigests.length || o.effectiveReferences.length !== effectiveEntryDigests.length) return undefined;
+      const file = readFileSync(this.binding.primeSessionFile);
+      const source: Json[] = [];
+      for (let index = 0; index < o.sourceLocators.length; index++) {
+        const locator = object(o.sourceLocators[index]);
+        if (!locator || locator.index !== index || !Number.isSafeInteger(locator.byteOffset) || (locator.byteOffset as number) < 0
+          || !safeInteger(locator.byteLength) || !safeInteger(locator.line) || locator.entryDigest !== sourceEntryDigests[index]
+          || (locator.entryId !== undefined && typeof locator.entryId !== "string")) return undefined;
+        const start = Number(locator.byteOffset), end = start + Number(locator.byteLength);
+        if (end > file.length || (start > 0 && file[start - 1] !== 0x0a)
+          || (end < file.length && file[end] !== 0x0a && !(file[end] === 0x0d && file[end + 1] === 0x0a))) return undefined;
+        const value = JSON.parse(file.subarray(start, end).toString("utf8")) as Json;
+        if (digest(value) !== locator.entryDigest) return undefined;
+        const valueId = object(value)?.id;
+        if (locator.entryId !== undefined && valueId !== locator.entryId) return undefined;
+        source.push(value);
+      }
+      if (digest(source) !== o.sourceDigest) return undefined;
+      for (let index = 0; index < o.effectiveReferences.length; index++) {
+        const reference = object(o.effectiveReferences[index]);
+        if (!reference || reference.entryDigest !== effectiveEntryDigests[index]
+          || (reference.sourceIndex !== null && (!Number.isSafeInteger(reference.sourceIndex) || (reference.sourceIndex as number) < 0 || (reference.sourceIndex as number) >= source.length))
+          || (reference.role !== undefined && typeof reference.role !== "string")) return undefined;
       }
       const compatibility = object(o.compatibility);
-      const messages = compatibility?.messages;
       if (!compatibility || compatibility.version !== DURABLE_STORE_VERSION || compatibility.sessionId !== this.binding.sessionId
         || typeof compatibility.branchId !== "string" || compatibility.branchId.length === 0 || compatibility.branchId.length > 512
-        || compatibility.revision !== c.generation || compatibility.messageCount !== effective.length || !Array.isArray(compatibility.entries)
-        || (o.version === LEGACY_DURABLE_OBJECT_VERSION ? (!Array.isArray(messages) || digest(messages) !== o.effectiveDigest) : messages !== undefined)
+        || compatibility.revision !== c.generation || compatibility.messageCount !== effectiveEntryDigests.length || !Array.isArray(compatibility.entries) || compatibility.entries.length !== 0
+        || compatibility.messages !== undefined
         || typeof compatibility.cropped !== "boolean" || compatibility.sourceDigest !== c.sourceDigest || compatibility.effectiveDigest !== c.effectiveDigest
         || compatibility.converterVersion !== c.converterVersion || compatibility.schemaVersion !== c.schemaVersion
         || typeof c.observedAt !== "number" || !Number.isFinite(c.observedAt) || c.observedAt < 0
-        || (c.commonPrefix as number) < 0 || (c.commonPrefix as number) > sourceEntryDigests.length
-        || sourceEntryDigests.length < (compatibility.entries as unknown[]).length) return undefined;
-      for (const rawEntry of compatibility.entries as unknown[]) { const entry = object(rawEntry); if (!entry || !Number.isSafeInteger(entry.index) || (entry.index as number) < 0 || (entry.index as number) >= sourceEntryDigests.length || typeof entry.text !== "string" || typeof entry.truncated !== "boolean") return undefined; }
+        || (c.commonPrefix as number) < 0 || (c.commonPrefix as number) > sourceEntryDigests.length) return undefined;
       return { commitDigest, commit: c as unknown as DerivedCommit, object: o as unknown as DerivedObject };
     } catch { return undefined; }
   }
@@ -504,8 +497,7 @@ export class DurableContextStore {
     };
     const commitText = canonical(commit), commitDigest = createHash("sha256").update(commitText).digest("hex");
     this.writeImmutable(join(this.root, "commits", `${commitDigest}.json`), `${commitText}\n`); this.fault?.("commit-durable");
-    // Validate the complete candidate, including every referenced body, before
-    // publishing its immutable head.
+    // Validate the complete reference candidate before publishing its immutable head.
     if (!this.validate(commitDigest)) throw new Error("candidate durable context generation failed validation");
     const generation = String(commit.generation).padStart(16, "0");
     this.writeImmutable(join(this.root, "heads", `${generation}-${commitDigest}`), `${commitDigest}\n`); this.fault?.("head-durable");
@@ -541,7 +533,7 @@ export class DurableContextStore {
   }
   private cleanup(): void {
     const cutoff = this.now() - this.staleLock;
-    for (const directory of [this.root, join(this.root, "objects"), join(this.root, "commits"), join(this.root, "heads"), ...(existsSync(join(this.root, "bodies")) ? [join(this.root, "bodies")] : [])]) {
+    for (const directory of [this.root, join(this.root, "objects"), join(this.root, "commits"), join(this.root, "heads")]) {
       for (const name of requireDirectory(directory)) {
         if (!name.startsWith(".tmp-")) continue;
         const path = join(directory, name);
@@ -562,25 +554,10 @@ export class DurableContextStore {
       }
       try { const value = object(parseJson(path)); if (typeof value?.object === "string" && SHA256.test(value.object)) referencedObjects.add(value.object); } catch { /* corrupt commits are ignored */ }
     }
-    const referencedBodies = new Set<string>();
-    for (const objectDigest of referencedObjects) try {
-      const value = object(parseJson(join(this.root, "objects", `${objectDigest}.json`)));
-      if (value?.version === DURABLE_OBJECT_VERSION) for (const field of [value.sourceEntryDigests, value.effectiveEntryDigests]) {
-        if (Array.isArray(field)) for (const item of field) if (typeof item === "string" && SHA256.test(item)) referencedBodies.add(item);
-      }
-    } catch { /* corrupt objects do not authorize body retention */ }
     for (const name of requireDirectory(join(this.root, "objects"))) {
       const match = /^([a-f0-9]{64})\.json$/.exec(name); if (!match || referencedObjects.has(match[1] ?? "")) continue;
       const path = join(this.root, "objects", name);
       try { if (lstatSync(path).mtimeMs < cutoff) unlinkSync(path); } catch { /* best effort */ }
-    }
-    if (existsSync(join(this.root, "bodies"))) {
-      for (const name of requireDirectory(join(this.root, "bodies"))) {
-        const match = /^([a-f0-9]{64})\.json$/.exec(name); if (!match || referencedBodies.has(match[1] ?? "")) continue;
-        const path = join(this.root, "bodies", name);
-        try { if (lstatSync(path).mtimeMs < cutoff) unlinkSync(path); } catch { /* best effort */ }
-      }
-      syncDirectory(join(this.root, "bodies"));
     }
     syncDirectory(join(this.root, "objects")); syncDirectory(join(this.root, "commits"));
   }

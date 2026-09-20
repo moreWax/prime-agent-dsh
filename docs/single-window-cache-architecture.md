@@ -75,8 +75,9 @@ as unavailable.
 Prime JSONL is the only full-content authority. Locator reads verify bounds, ID,
 canonical digest, and the aggregate source digest before returning content. A
 changed or replaced source record fails closed. The next lifecycle sync may rebuild
-a new generation from the then-current authoritative JSONL. Legacy v1 and v2 roots
-remain readable for backward compatibility, but all new publications use v3.
+a new generation from the then-current authoritative JSONL. Derived-object
+v3-reference is the only supported derived-store schema. Older derived roots are
+discarded and rebuilt from Prime JSONL; they are not migrated or maintained.
 
 ## Cache measurement
 

@@ -146,7 +146,7 @@ Context objects are stored under the matching Prime session artifact directory:
 session-artifacts/<session>/dsh-context/
   BINDING
   CURRENT
-  manifest.json                 # generated compatibility pointer only
+  manifest.json                 # generated current-view pointer only
   objects/<sha256>.json         # immutable derived objects
   commits/<sha256>.json         # immutable generation commits
   heads/<generation>-<sha256>   # recovery authority

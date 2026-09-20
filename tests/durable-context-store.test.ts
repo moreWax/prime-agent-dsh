@@ -90,10 +90,10 @@ console.log(result.commit.generation);`;
 });
 
 test("reference-only compatibility view never persists preview text", async () => {
-  const { store } = await fixture({ maxEntries: 2, maxEntryBytes: 80 });
+  const { store } = await fixture();
   const result = await store.publish(input([{ text: "discarded" }, { text: "🙂".repeat(100) }, { content: "short" }], [{ role: "user", content: "effective" }]));
   const view = result.object.compatibility;
-  assert.deepEqual(view.entries, []); assert.equal(view.messages, undefined); assert.equal(view.cropped, false);
+  assert.deepEqual(view.entries, []); assert.equal("messages" in view, false); assert.equal(view.cropped, false);
   assert.equal(view.sourceDigest, result.commit.sourceDigest); assert.equal(view.effectiveDigest, result.commit.effectiveDigest);
 });
 
@@ -128,7 +128,7 @@ test("leaf divergence is a rebuild and never reuses stale compatibility metadata
   assert.equal(second.commit.generation, 2);
 });
 
-test("more than 2000 compatibility entries are bounded while an oversized effective body publishes", async () => {
+test("v3 metadata stays bounded while large source and effective content remains in Prime", async () => {
   const { store } = await fixture({ maxObjectBytes: 1_000_000 });
   const many = Array.from({ length: 2_101 }, (_, index) => ({ text: `entry-${index}` }));
   const published = await store.publish(input(many, [{ role: "user", content: "bounded" }]));
@@ -136,7 +136,7 @@ test("more than 2000 compatibility entries are bounded while an oversized effect
   assert.equal(published.object.sourceLocators?.length, 2_101);
   const large = await store.publish(input(many, [{ role: "user", content: "x".repeat(2_000_000) }]));
   assert.equal(store.recover()?.commitDigest, large.commitDigest);
-  assert.equal(large.object.effective, undefined);
+  assert.equal("effective" in large.object, false);
 });
 
 
@@ -181,7 +181,7 @@ test("v3 references cumulative Prime context larger than 16 MiB without duplicat
   const objectRaw = await readFile(join(root, "objects", `${result.commit.object}.json`));
   assert.equal(result.object.version, "prime-agent-dsh/derived-object-v3-reference");
   assert.ok(objectRaw.byteLength < 16 * 1024 * 1024);
-  assert.equal(result.object.compatibility.messages, undefined);
+  assert.equal("messages" in result.object.compatibility, false);
   assert.equal(store.recover()?.commitDigest, result.commitDigest);
 });
 
@@ -194,4 +194,44 @@ test("v3 recovery fails closed on a tampered located Prime entry", async () => {
   assert.equal(replacement.length, locator.byteLength);
   replacement.copy(raw, locator.byteOffset); await writeFile(session, raw);
   assert.equal(store.recover()?.commitDigest, old.commitDigest);
+});
+
+
+test("old derived schemas reset only cache-owned state and rebuild from Prime", async (t) => {
+  for (const legacy of ["binding", "object"] as const) await t.test(legacy, async () => {
+    const temporary = await mkdtemp(join(tmpdir(), "durable-reset-"));
+    const session = join(temporary, "prime.jsonl");
+    const source = [{ id: "m1", message: { role: "user", content: "from Prime" } }];
+    await writeFile(session, `${JSON.stringify(source[0])}\n`, "utf8");
+    const root = join(temporary, "store");
+    let seed: DurableContextStore | undefined;
+    if (legacy === "object") {
+      seed = new DurableContextStore({ root, binding: { sessionId: "session-a", primeSessionFile: session } });
+      const published = await seed.publish({ source, effective: [source[0]!.message], converterVersion: "c", schemaVersion: "s" });
+      const objectPath = join(root, "objects", `${published.commit.object}.json`);
+      const value = JSON.parse(await readFile(objectPath, "utf8"));
+      value.version = "prime-agent-dsh/derived-object-v2";
+      await writeFile(objectPath, JSON.stringify(value), "utf8");
+    } else {
+      await mkdir(join(root, "heads"), { recursive: true });
+      await mkdir(join(root, "commits")); await mkdir(join(root, "objects")); await mkdir(join(root, "bodies"));
+      await writeFile(join(root, "BINDING"), JSON.stringify({ version: "prime-agent-dsh/durable-store-v1" }));
+    }
+    await mkdir(join(root, "artifacts"), { recursive: true }); await mkdir(join(root, "grants"), { recursive: true });
+    await writeFile(join(root, "artifacts", "user.md"), "keep artifact");
+    await writeFile(join(root, "grants", "user.json"), "keep grant");
+    await writeFile(join(root, "user-note.txt"), "keep unrelated file");
+    await writeFile(join(root, "manifest-obsolete.json"), "old"); await writeFile(join(root, "CURRENT"), "old");
+    await mkdir(join(root, "indexes"), { recursive: true }); await writeFile(join(root, "indexes", "terms"), "old");
+    const store = new DurableContextStore({ root, binding: { sessionId: "session-a", primeSessionFile: session } });
+    assert.equal(await readFile(join(root, "artifacts", "user.md"), "utf8"), "keep artifact");
+    assert.equal(await readFile(join(root, "grants", "user.json"), "utf8"), "keep grant");
+    assert.equal(await readFile(join(root, "user-note.txt"), "utf8"), "keep unrelated file");
+    await assert.rejects(readFile(join(root, "manifest-obsolete.json")), /ENOENT/);
+    await assert.rejects(readFile(join(root, "indexes", "terms")), /ENOENT/);
+    const rebuilt = await store.publish({ source, effective: [source[0]!.message], converterVersion: "c", schemaVersion: "s" });
+    assert.equal(rebuilt.commit.generation, 1);
+    assert.equal(rebuilt.object.version, "prime-agent-dsh/derived-object-v3-reference");
+    assert.equal(store.recover()?.commitDigest, rebuilt.commitDigest);
+  });
 });
