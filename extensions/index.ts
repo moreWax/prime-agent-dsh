@@ -1,7 +1,7 @@
-import { compact as compactPrime, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Api, Model } from "@earendil-works/pi-ai";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { readdirSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
+import { compactWithWarmPrefix } from "../src/cache-friendly-compaction.js";
 import { DurableCompactionController, loadCompactionPlannerConfig } from "../src/compaction.js";
 import { contextObjectRoot } from "../src/context-objects.js";
 import { RecursiveContextLoader } from "../src/recursive-context-loader.js";
@@ -59,29 +59,7 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
   });
   const compactionController = new DurableCompactionController(
     loadCompactionPlannerConfig(pi.getFlag("dsh-compaction") as string | undefined),
-    async (event, ctx, plan) => {
-      const model = ctx.model as Model<Api> | undefined;
-      if (!model) throw new Error("Prime Agent has no active model for compaction");
-      const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-      if (!auth.ok) throw new Error(`Could not resolve compaction model authentication: ${auth.error}`);
-      const headers = auth.headers
-        ? Object.fromEntries(Object.entries(auth.headers).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
-        : undefined;
-      return compactPrime(
-        plan.preparation,
-        model,
-        auth.apiKey,
-        headers,
-        event.customInstructions,
-        event.signal,
-        pi.getThinkingLevel(),
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        ctx.sessionManager.getSessionId(),
-      );
-    },
+    async (event, ctx, plan) => compactWithWarmPrefix(pi, event, ctx, plan),
   );
   compactionController.register(pi);
 

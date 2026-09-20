@@ -13,7 +13,7 @@ const expected = [
   "docs/context-spill.md", "docs/durable-context-query.md", "docs/inference-context-plan.md", "docs/shadow-telemetry-validation.md", "docs/single-window-cache-architecture.md",
   "extensions/index.ts", "extensions/shadow-context.ts", "scripts/package-smoke.mjs", "scripts/patch-pi-ai-partial-json.mjs",
   "skills/dsh-context/SKILL.md", "skills/dsh-context/pyproject.toml", "skills/dsh-context/src/dsh_context/__init__.py",
-  "src/compaction.ts", "src/context-converter.ts", "src/context-objects.ts", "src/context-pressure.ts", "src/context-protocol.ts", "src/context-spill.ts",
+  "src/cache-friendly-compaction.ts", "src/compaction.ts", "src/context-converter.ts", "src/context-objects.ts", "src/context-pressure.ts", "src/context-protocol.ts", "src/context-spill.ts",
   "src/dsh-context-service.ts", "src/durable-context-query.ts", "src/durable-context-store.ts", "src/durable-file-attachments.ts", "src/dsh-image-attachments.ts", "src/prefix-metrics.ts", "src/provider-cache-series.ts", "src/recursive-context-loader.ts", "src/rlm-context-bootstrap.ts", "src/rlm-context-inheritance.ts", "src/shadow-telemetry.ts", "src/standalone-compaction-planner.ts",
 ].sort();
 

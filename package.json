@@ -14,6 +14,7 @@
   "files": [
     "extensions/index.ts",
     "extensions/shadow-context.ts",
+    "src/cache-friendly-compaction.ts",
     "src/compaction.ts",
     "src/context-converter.ts",
     "src/context-objects.ts",

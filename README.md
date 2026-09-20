@@ -136,7 +136,7 @@ Grants are token-addressed, read-only, size-limited, and expiring. A child alway
 | `PRIME_DSH_PRUNE_HEAD_CHARS` | `4096` | Tool-result prefix retained by the planner. |
 | `PRIME_DSH_PRUNE_TAIL_CHARS` | `1024` | Tool-result suffix retained by the planner. |
 
-Shadow compaction observes Prime's supported `session_before_compact` lifecycle without changing the request. The current `active` mode is explicit opt-in because it delegates summarization to Prime's stock compactor, whose cache-disabled transcript-shaped request cannot reuse DSH's warm-prefix strategy. It still returns a normal Prime `CompactionResult` and never edits session files directly.
+Shadow compaction observes Prime's supported `session_before_compact` lifecycle without changing the request. Explicit opt-in `active` mode uses Prime/pi-ai's public `completeSimple` provider API for the closest supported warm-prefix approximation: it replays the original unpruned message prefix with the current system prompt, active tools in order, selected/request-adjusted model and auth, stable session ID, and cache retention enabled, then appends one summary instruction. It returns a normal Prime `CompactionResult` and never edits session files directly. Because auxiliary calls cannot re-run other extensions' private `before_provider_request` transforms, keep shadow mode when another extension rewrites provider payloads.
 
 ## Storage and safety
 

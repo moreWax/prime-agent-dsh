@@ -50,31 +50,30 @@ The first request after a boundary is cold or partially cold. Report it separate
 
 ## Compaction contract
 
-DSH compaction-basic obtains high reuse by summarizing with the exact existing warm prefix: current system message, current tools, selected history in original order, and one trailing compaction instruction. The committed replacement then begins a new main-request epoch.
+DSH compaction-basic obtains high reuse by summarizing with the existing warm prefix: current system message, current tools, selected history in original order, and one trailing compaction instruction. The committed replacement then begins a new main-request epoch.
 
-Prime's current stock compactor instead uses a distinct summary system prompt, serializes history into one user message, and disables cache retention. Therefore this package defaults to `shadow` compaction. `active` remains explicit opt-in until an integrated implementation can:
+Prime's stock compactor uses a distinct summary system prompt, serializes history into one user message, and disables cache retention. This package therefore implements the closest supported warm-prefix approximation through public Prime/pi-ai APIs. It:
 
-1. replay the exact Prime provider-visible prefix and tool envelope;
-2. use the same provider/model/session identity and keep cache retention enabled;
-3. preserve Prime's balanced durable cut and commit through `session_before_compact`;
-4. revalidate source provenance immediately before commit;
-5. record auxiliary-request and first-post-replacement cache metrics separately.
+1. converts the original, unpruned `session_before_compact` span with Prime's exported `convertToLlm`;
+2. reuses the effective system prompt, active tools in exact public API order, selected/request-adjusted model, resolved authentication, and stable Prime session ID;
+3. enables short cache retention and appends one bounded summary instruction;
+4. validates tool boundaries, response completion, cancellation, source leaf, and source bytes;
+5. returns a standard `CompactionResult` through Prime's supported commit seam.
+
+The mode still defaults to `shadow`. Prime 0.9.5 exposes the provider `completeSimple`, auth, system prompt, active tool, and session APIs needed for the normal surface, but an extension auxiliary call cannot invoke other extensions' private provider-payload transformation chain. Deployments with provider-rewriting extensions must remain shadow-only unless those transforms are known not to affect the selected model.
 
 ## Durable append-only target
 
-The current durable store publishes immutable commits and content-addressed objects, but each object contains the full effective message array. It is logically append-only yet not storage-efficient for long sessions and can hit the object-size ceiling.
+Derived-object v2 stores exact source and effective entries as immutable content-addressed bodies. Small immutable root objects contain ordered body digests, compatibility metadata, and append/rebuild provenance. New generations deduplicate unchanged bodies instead of copying the cumulative transcript, while v1 roots remain readable.
 
-The next storage version must use:
+The remaining durability work is to:
 
-- per-entry or chunked content-addressed source and effective records;
-- a commit DAG containing ordered references and append/rebuild/projection metadata;
-- immutable projection-replacement decisions rather than destructive rewrites;
-- a small validated head/manifest used only as a hint;
-- one shared validator for TypeScript query, recovery, and Python readers;
-- spill reachability derived from all valid heads;
-- explicit durability barriers after committed assistant messages, before compaction, and at shutdown.
+- unify head/object/body validation across TypeScript recovery, query, and Python readers;
+- derive spill reachability from every valid head;
+- retain explicit durability barriers after committed assistant messages, before compaction, and at shutdown;
+- strengthen branch-specific ancestry lookup beyond bounded recovery scans.
 
-Prime JSONL remains the recovery authority until this version proves exact source reconstruction. Documentation must not claim that the current full-snapshot sidecar can independently recreate all canonical history.
+Prime JSONL remains canonical. DSH v2 can reconstruct its exact observed source/effective cut, but it does not supersede Prime session recovery or own the model loop.
 
 ## Cache measurement
 
