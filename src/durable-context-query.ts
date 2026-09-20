@@ -4,7 +4,8 @@ import { isAbsolute, join } from "node:path";
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const COMMIT_VERSION = "prime-agent-dsh/derived-commit-v1";
-const OBJECT_VERSION = "prime-agent-dsh/derived-object-v1";
+const OBJECT_VERSION = "prime-agent-dsh/derived-object-v2";
+const LEGACY_OBJECT_VERSION = "prime-agent-dsh/derived-object-v1";
 const STORE_VERSION = "prime-agent-dsh/durable-store-v1";
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
@@ -95,7 +96,7 @@ function encode(value: unknown): string { return Buffer.from(canonical(value)).t
 function decode(value: string): RecordValue { if (Buffer.byteLength(value) > 4096) throw new Error("invalid query cursor"); try { const parsed = obj(JSON.parse(Buffer.from(value, "base64url").toString("utf8"))); if (parsed) return parsed; } catch { /* below */ } throw new Error("invalid query cursor"); }
 function validPositive(value: number): boolean { return Number.isSafeInteger(value) && value > 0; }
 
-interface Loaded { head: string; commitDigest: string; commit: RecordValue; object: RecordValue; branchId: string }
+interface Loaded { head: string; commitDigest: string; commit: RecordValue; object: RecordValue; branchId: string; source?: Json[]; effective: Json[] }
 interface Candidate { hit: ContextQueryHit; sort: readonly (string | number)[] }
 
 /**
@@ -133,8 +134,25 @@ export class DurableContextQuery {
       const commit = obj(JSON.parse(commitRaw)); if (!commit || commit.version !== COMMIT_VERSION || commit.bindingDigest !== this.bindingDigest || commit.generation !== Number(head.slice(0, 16)) || typeof commit.object !== "string" || !SHA256.test(commit.object) || typeof commit.sourceDigest !== "string" || !SHA256.test(commit.sourceDigest) || typeof commit.effectiveDigest !== "string" || !SHA256.test(commit.effectiveDigest) || (commit.parent !== null && (typeof commit.parent !== "string" || !SHA256.test(commit.parent)))) throw new Error();
       const objectRaw = safeText(join(this.root, "objects", `${commit.object}.json`)).trim(); if (hashText(objectRaw) !== commit.object) throw new Error();
       const object = obj(JSON.parse(objectRaw)); const compatibility = obj(object?.compatibility);
-      if (!object || object.version !== OBJECT_VERSION || object.bindingDigest !== this.bindingDigest || object.sourceDigest !== commit.sourceDigest || object.effectiveDigest !== commit.effectiveDigest || !Array.isArray(object.sourceEntryDigests) || !(object.sourceEntryDigests as unknown[]).every(v => typeof v === "string" && SHA256.test(v)) || !Array.isArray(object.effective) || digest(object.effective) !== object.effectiveDigest || !Array.isArray(object.effectiveEntryDigests) || object.effectiveEntryDigests.length !== object.effective.length || object.effective.some((v, i) => digest(v) !== (object.effectiveEntryDigests as unknown[])[i]) || !compatibility || compatibility.version !== STORE_VERSION || compatibility.sessionId !== this.sessionId || compatibility.revision !== commit.generation || compatibility.messageCount !== object.effective.length || !Array.isArray(compatibility.messages) || digest(compatibility.messages) !== object.effectiveDigest || compatibility.sourceDigest !== commit.sourceDigest || compatibility.effectiveDigest !== commit.effectiveDigest || typeof compatibility.branchId !== "string" || !Array.isArray(compatibility.entries) || typeof compatibility.cropped !== "boolean") throw new Error();
-      values.push({ head, commitDigest, commit, object, branchId: compatibility.branchId });
+      if (!object || (object.version !== OBJECT_VERSION && object.version !== LEGACY_OBJECT_VERSION) || object.bindingDigest !== this.bindingDigest || object.sourceDigest !== commit.sourceDigest || object.effectiveDigest !== commit.effectiveDigest || !Array.isArray(object.sourceEntryDigests) || !(object.sourceEntryDigests as unknown[]).every(v => typeof v === "string" && SHA256.test(v)) || !Array.isArray(object.effectiveEntryDigests) || !(object.effectiveEntryDigests as unknown[]).every(v => typeof v === "string" && SHA256.test(v)) || !compatibility || compatibility.version !== STORE_VERSION || compatibility.sessionId !== this.sessionId || compatibility.revision !== commit.generation || compatibility.sourceDigest !== commit.sourceDigest || compatibility.effectiveDigest !== commit.effectiveDigest || typeof compatibility.branchId !== "string" || !Array.isArray(compatibility.entries) || typeof compatibility.cropped !== "boolean") throw new Error();
+      let source: Json[] | undefined; let effective: Json[];
+      if (object.version === LEGACY_OBJECT_VERSION) {
+        if (!Array.isArray(object.effective) || digest(object.effective) !== object.effectiveDigest || object.effectiveEntryDigests.length !== object.effective.length || object.effective.some((v, i) => digest(v) !== (object.effectiveEntryDigests as unknown[])[i]) || !Array.isArray(compatibility.messages) || digest(compatibility.messages) !== object.effectiveDigest) throw new Error();
+        effective = object.effective as Json[];
+      } else {
+        if ("effective" in object || compatibility.messages !== undefined) throw new Error();
+        const readBody = (bodyDigest: unknown): Json => {
+          if (typeof bodyDigest !== "string" || !SHA256.test(bodyDigest)) throw new Error();
+          const raw = safeText(join(this.root, "bodies", `${bodyDigest}.json`)).trim();
+          if (hashText(raw) !== bodyDigest) throw new Error();
+          const value = JSON.parse(raw) as Json; if (digest(value) !== bodyDigest) throw new Error(); return value;
+        };
+        source = (object.sourceEntryDigests as unknown[]).map(readBody);
+        effective = (object.effectiveEntryDigests as unknown[]).map(readBody);
+        if (digest(source) !== object.sourceDigest || digest(effective) !== object.effectiveDigest) throw new Error();
+      }
+      if (compatibility.messageCount !== effective.length) throw new Error();
+      values.push({ head, commitDigest, commit, object, branchId: compatibility.branchId, ...(source ? { source } : {}), effective });
       if (values.length >= this.maxCheckpoints) break;
     } catch { corrupt++; }
     return { values, corrupt };
@@ -171,7 +189,8 @@ export class DurableContextQuery {
     const queryTokens = tokens(request.query); if (mode === "full-text" && queryTokens.length === 0) throw new Error("full-text query has no searchable terms");
     const docs: { loaded: Loaded; index: number; text: string; value: Json | undefined; digest: string; truncated: boolean; exact: boolean }[] = [];
     for (const v of selected) {
-      if (scope === "effective") (v.object.effective as Json[]).forEach((value, index) => docs.push({ loaded: v, index, text: semanticText(value), value, digest: (v.object.effectiveEntryDigests as string[])[index], truncated: false, exact: true }));
+      if (scope === "effective") v.effective.forEach((value, index) => docs.push({ loaded: v, index, text: semanticText(value), value, digest: (v.object.effectiveEntryDigests as string[])[index], truncated: false, exact: true }));
+      else if (v.source) v.source.forEach((value, index) => docs.push({ loaded: v, index, text: semanticText(value), value, digest: (v.object.sourceEntryDigests as string[])[index], truncated: false, exact: true }));
       else { const entries = (obj(v.object.compatibility)?.entries as unknown[]); for (const raw of entries) { const e = obj(raw); if (!e || !Number.isSafeInteger(e.index) || typeof e.text !== "string") continue; const digests = v.object.sourceEntryDigests as unknown[]; const d = digests[e.index as number]; if (typeof d !== "string" || !SHA256.test(d)) continue; docs.push({ loaded: v, index: e.index as number, text: e.text, value: undefined, digest: d, truncated: e.truncated === true, exact: false }); } }
       if (docs.length > this.maxScannedEntries) throw new Error("query scan exceeds configured bound");
     }

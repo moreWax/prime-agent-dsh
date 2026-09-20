@@ -96,6 +96,49 @@ class DshContextTests(unittest.TestCase):
         self.assertEqual(record["sourceSnapshotDigest"], self.digest)
         self.assertEqual(record["sourceBranchId"], "leaf-2")
 
+    def test_v2_reconstructs_messages_and_rejects_tampered_bodies(self):
+        bodies = self.root / "bodies"
+        objects = self.root / "objects"
+        bodies.mkdir()
+        objects.mkdir()
+        source = [{"type": "message", "text": "source exact"}]
+        messages = [{"role": "user", "content": [{"type": "text", "text": "v2 exact"}]}]
+
+        def store_bodies(values):
+            digests = []
+            raws = []
+            for value in values:
+                raw = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
+                digest = hashlib.sha256(raw).hexdigest()
+                (bodies / f"{digest}.json").write_bytes(raw + b"\n")
+                digests.append(digest)
+                raws.append(raw)
+            return digests, hashlib.sha256(b"[" + b",".join(raws) + b"]").hexdigest()
+
+        source_digests, source_digest = store_bodies(source)
+        effective_digests, effective_digest = store_bodies(messages)
+        compatibility = {
+            "version": "prime-agent-dsh/durable-store-v1", "sessionId": "root-session",
+            "branchId": "leaf-v2", "revision": 3, "messageCount": 1,
+            "entries": [], "cropped": False, "sourceDigest": source_digest,
+            "effectiveDigest": effective_digest, "converterVersion": "c", "schemaVersion": "prime-agent-dsh/context-object-v1",
+        }
+        stored = {
+            "version": "prime-agent-dsh/derived-object-v2", "bindingDigest": "0" * 64,
+            "sourceDigest": source_digest, "effectiveDigest": effective_digest,
+            "sourceEntryDigests": source_digests, "effectiveEntryDigests": effective_digests,
+            "compatibility": compatibility,
+        }
+        raw = json.dumps(stored, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
+        digest = hashlib.sha256(raw).hexdigest()
+        (objects / f"{digest}.json").write_bytes(raw + b"\n")
+        manifest = {"version": "prime-agent-dsh/context-object-v1", "digest": digest, "snapshot": f"objects/{digest}.json"}
+        (self.root / "manifest.json").write_text(json.dumps(manifest))
+        self.assertEqual(dsh_context.current().messages()[0].text, "v2 exact")
+        (bodies / f"{effective_digests[0]}.json").write_text("{}")
+        with self.assertRaisesRegex(RuntimeError, "body digest mismatch"):
+            dsh_context.current().snapshot()
+
     def test_snapshot_tampering_is_rejected(self):
         path = self.root / "snapshots" / f"{self.digest}.json"
         path.write_text("{}")

@@ -88,7 +88,7 @@ test("compatibility view is bounded and UTF-8 crops long entries", async () => {
   const result = await store.publish(input([{ text: "discarded" }, { text: "🙂".repeat(100) }, { content: "short" }], [{ role: "user", content: "effective" }]));
   const view = result.object.compatibility;
   assert.equal(view.entries.length, 2); assert.equal(view.entries[0]?.index, 1); assert.equal(view.entries[0]?.truncated, true);
-  assert.match(view.entries[0]?.text ?? "", /UTF-8 bytes omitted/); assert.equal((view.messages[0] as { role?: unknown })?.role, "user"); assert.equal(view.cropped, true);
+  assert.match(view.entries[0]?.text ?? "", /UTF-8 bytes omitted/); assert.equal(view.messages, undefined); assert.equal(view.cropped, true);
   assert.equal(view.sourceDigest, result.commit.sourceDigest); assert.equal(view.effectiveDigest, result.commit.effectiveDigest);
 });
 
@@ -123,14 +123,15 @@ test("leaf divergence is a rebuild and never reuses stale compatibility metadata
   assert.equal(second.commit.generation, 2);
 });
 
-test("more than 2000 entries are deterministically bounded and an oversized object preserves prior generation", async () => {
+test("more than 2000 compatibility entries are bounded while an oversized effective body publishes", async () => {
   const { store } = await fixture({ maxObjectBytes: 1_000_000 });
   const many = Array.from({ length: 2_101 }, (_, index) => ({ text: `entry-${index}` }));
   const published = await store.publish(input(many, [{ role: "user", content: "bounded" }]));
   assert.equal(published.object.compatibility.entries.length, 2_000);
   assert.equal(published.object.compatibility.entries[0]?.index, 101);
-  await assert.rejects(store.publish(input(many, [{ role: "user", content: "x".repeat(2_000_000) }])), /exceeds/);
-  assert.equal(store.recover()?.commitDigest, published.commitDigest);
+  const large = await store.publish(input(many, [{ role: "user", content: "x".repeat(2_000_000) }]));
+  assert.equal(store.recover()?.commitDigest, large.commitDigest);
+  assert.equal(large.object.effective, undefined);
 });
 
 
@@ -165,4 +166,25 @@ test("fork heads choose their longest valid branch ancestor rather than globally
 
 test("durable publication rejects lone surrogates without replacing the prior valid generation",async()=>{
  const f=await fixture();const old=await f.store.publish(input(["valid"]));await assert.rejects(f.store.publish(input(["bad\ud800text"])),/well-formed Unicode/);assert.equal(f.store.recover()?.commitDigest,old.commitDigest);
+});
+
+
+test("v2 publishes and recovers cumulative effective context larger than 16 MiB without a monolithic object", async () => {
+  const { root, store } = await fixture();
+  const effective = Array.from({ length: 17 }, (_, index) => ({ role: "user", content: `${index}:` + "x".repeat(1024 * 1024) }));
+  const result = await store.publish(input(effective));
+  const objectRaw = await readFile(join(root, "objects", `${result.commit.object}.json`));
+  assert.equal(result.object.version, "prime-agent-dsh/derived-object-v2");
+  assert.ok(objectRaw.byteLength < 16 * 1024 * 1024);
+  assert.equal(result.object.compatibility.messages, undefined);
+  assert.equal(store.recover()?.commitDigest, result.commitDigest);
+});
+
+test("v2 recovery fails closed on a missing or tampered entry body", async () => {
+  const { root, store } = await fixture();
+  const old = await store.publish(input([{ text: "old" }]));
+  const latest = await store.publish(input([{ text: "old" }, { text: "latest" }]));
+  const body = latest.object.effectiveEntryDigests[1]; assert.ok(body);
+  await writeFile(join(root, "bodies", `${body}.json`), '{"text":"tampered"}\n');
+  assert.equal(store.recover()?.commitDigest, old.commitDigest);
 });

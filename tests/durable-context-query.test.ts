@@ -60,11 +60,11 @@ test("corrupt checkpoints are isolated and all query bounds are enforced", async
   assert.throws(() => query.query({ query: "a" }), /scan exceeds/);
 });
 
-test("source compatibility search identifies bounded bodies honestly", async () => {
+test("v2 source search resolves exact immutable bodies", async () => {
   const f = await fixture(); await f.publish([{ text: "source needle" }], "main");
   const query = new DurableContextQuery({ root: f.root, sessionId: "only-this", primeSessionFile: f.session });
   const hit = query.query({ query: "needle", scope: "source" }).hits[0];
-  assert.equal(hit?.value, undefined); assert.equal(hit?.trace.scope, "source"); assert.equal(hit?.trace.exactBody, false);
+  assert.deepEqual(hit?.value, { text: "source needle" }); assert.equal(hit?.trace.scope, "source"); assert.equal(hit?.trace.exactBody, true);
 });
 
 

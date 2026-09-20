@@ -73,10 +73,12 @@ test("context objects mirror Prime without changing its messages", async () => {
   assert.equal(appended.manifest.branchId, leaf);
 
   const stored = JSON.parse(await readFile(join(appended.root, appended.manifest.snapshot), "utf8"));
-  assert.equal(stored.version, "prime-agent-dsh/derived-object-v1");
+  assert.equal(stored.version, "prime-agent-dsh/derived-object-v2");
   const snapshot = stored.compatibility;
   assert.equal(snapshot.version, "prime-agent-dsh/durable-store-v1");
-  assert.equal(snapshot.messages.length, 3);
+  assert.equal(snapshot.messages, undefined);
+  assert.equal(stored.effective, undefined);
+  assert.equal(stored.effectiveEntryDigests.length, 3);
   assert.deepEqual(snapshot.entries.map((entry: { id?: string }) => entry.id), ["user-1", "assistant-1", "user-2"]);
 });
 
@@ -101,11 +103,11 @@ test("context sync sanitizes runtime-only child task and tool result metadata", 
   const synced = await new ContextObjectStore().sync(ctx, messages);
   assert(synced);
   const stored = JSON.parse(await readFile(join(synced.root, synced.manifest.snapshot), "utf8"));
-  const snapshot = stored.compatibility;
-  assert.equal(snapshot.messages[0].content[0].text, "[task from parent] keep this task text");
-  assert.equal(snapshot.messages[2].content[0].content[0].text, "useful tool output");
-  assert.deepEqual(snapshot.messages[0].source.prime.fields.details, { delivery: "child" });
-  assert.deepEqual(snapshot.messages[2].source.prime.fields.details, { exitCode: 0, bytes: "12" });
+  const durableMessages = await Promise.all(stored.effectiveEntryDigests.map(async (digest: string) => JSON.parse(await readFile(join(synced.root, "bodies", `${digest}.json`), "utf8"))));
+  assert.equal(durableMessages[0].content[0].text, "[task from parent] keep this task text");
+  assert.equal(durableMessages[2].content[0].content[0].text, "useful tool output");
+  assert.deepEqual(durableMessages[0].source.prime.fields.details, { delivery: "child" });
+  assert.deepEqual(durableMessages[2].source.prime.fields.details, { exitCode: 0, bytes: "12" });
   assert.equal(Object.isFrozen(taskDetails), false);
   assert.equal(Object.isFrozen(resultDetails), false);
 });

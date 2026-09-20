@@ -324,7 +324,11 @@ class ContextHandle:
             raise RuntimeError(f"invalid DSH context snapshot file: {path}")
         raw = path.read_bytes()
         stored = json.loads(raw)
-        is_durable = isinstance(stored, dict) and stored.get("version") == "prime-agent-dsh/derived-object-v1"
+        durable_version = stored.get("version") if isinstance(stored, dict) else None
+        is_durable = durable_version in (
+            "prime-agent-dsh/derived-object-v1",
+            "prime-agent-dsh/derived-object-v2",
+        )
         actual = sha256(raw.rstrip(b"\n") if is_durable else raw).hexdigest()
         if actual != expected:
             raise RuntimeError("DSH context snapshot digest mismatch")
@@ -332,6 +336,35 @@ class ContextHandle:
             compatibility = stored.get("compatibility")
             if not isinstance(compatibility, dict) or compatibility.get("version") != "prime-agent-dsh/durable-store-v1":
                 raise RuntimeError("invalid DSH durable context object")
+            if durable_version == "prime-agent-dsh/derived-object-v2":
+                def read_bodies(field: str, aggregate: str) -> list[Any]:
+                    digests = stored.get(field)
+                    if not isinstance(digests, list) or not all(isinstance(item, str) and re.fullmatch(r"[a-f0-9]{64}", item) for item in digests):
+                        raise RuntimeError("invalid DSH durable context body references")
+                    values: list[Any] = []
+                    canonical_bodies: list[bytes] = []
+                    for body_digest in digests:
+                        body_path = self.root / "bodies" / f"{body_digest}.json"
+                        if body_path.is_symlink() or not body_path.is_file():
+                            raise RuntimeError("missing or unsafe DSH durable context body")
+                        body_raw = body_path.read_bytes().rstrip(b"\n")
+                        if sha256(body_raw).hexdigest() != body_digest:
+                            raise RuntimeError("DSH durable context body digest mismatch")
+                        try:
+                            values.append(json.loads(body_raw))
+                        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                            raise RuntimeError("invalid DSH durable context body") from error
+                        canonical_bodies.append(body_raw)
+                    aggregate_raw = b"[" + b",".join(canonical_bodies) + b"]"
+                    if sha256(aggregate_raw).hexdigest() != stored.get(aggregate):
+                        raise RuntimeError("DSH durable aggregate context digest mismatch")
+                    return values
+
+                read_bodies("sourceEntryDigests", "sourceDigest")
+                messages = read_bodies("effectiveEntryDigests", "effectiveDigest")
+                if compatibility.get("messageCount") != len(messages) or "messages" in compatibility:
+                    raise RuntimeError("invalid DSH durable context compatibility view")
+                compatibility = {**compatibility, "messages": messages}
             data = {**compatibility, "version": _VERSION, "metrics": compatibility.get("metrics", manifest.get("metrics", {}))}
         elif isinstance(stored, dict) and stored.get("version") == _VERSION:
             data = stored
