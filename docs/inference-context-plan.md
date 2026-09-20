@@ -41,7 +41,7 @@ Prime UI -> Prime AgentSession/loop -> Prime context assembly
 The bridge has two halves:
 
 1. **Prime package**: observes Prime lifecycle, translates committed Prime messages into a versioned neutral event protocol, asks the DSH service for a projection/decision, and leaves Prime's provider stream in control.
-2. **DSH inference-context bundle**: a minimal Cordis application using public DSH session/projection/context components but no DSH agent loop, inbox, tool executor, or frontend.
+2. **DSH inference-context sidecar**: an in-process projection using only the public DSH session, message, and attachment components needed by the production context objects. It has no DSH agent loop, inbox, tool executor, provider wrapper, or frontend.
 
 ## 4. Authority matrix
 

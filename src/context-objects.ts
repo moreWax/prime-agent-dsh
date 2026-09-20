@@ -1,0 +1,299 @@
+import { closeSync, chmodSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, renameSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { dirname, join, sep } from "node:path";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { Message } from "@deepseek-ai/dsh-llm";
+import { primeToDshAsync, type PrimeEnvelope, type PrimeMessage } from "./context-converter.js";
+import { DurableContextStore, type PublishResult } from "./durable-context-store.js";
+import { DurableFileAttachments } from "./durable-file-attachments.js";
+import { spillContextText, type ContextSpillLocator } from "./context-spill.js";
+import { LocalDshImageAttachments, type DshImageAttachmentGateway } from "./dsh-image-attachments.js";
+import { stableJson } from "./prefix-metrics.js";
+
+export const CONTEXT_OBJECT_VERSION = "prime-agent-dsh/context-object-v1" as const;
+const MAX_MESSAGES = 2_000;
+const MAX_ENTRY_TEXT_BYTES = 64 * 1024;
+
+type JsonObject = Record<string, unknown>;
+
+export interface ContextObjectEntry {
+  readonly index: number;
+  readonly id?: string;
+  readonly parentId?: string | null;
+  readonly entryType: string;
+  readonly role?: string;
+  readonly customType?: string;
+  readonly text: string;
+  readonly truncated: boolean;
+  /** Verified durable full text when the compatibility body is oversized. */
+  readonly contextSpill?: ContextSpillLocator;
+}
+
+export interface ContextObjectMetrics {
+  readonly assistantMessages: number;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheReadTokens: number;
+  readonly cacheWriteTokens: number;
+  readonly totalTokens: number;
+}
+
+export interface ContextObjectSnapshot {
+  readonly version: typeof CONTEXT_OBJECT_VERSION;
+  readonly sessionId: string;
+  /** Exact Prime leaf observed for this immutable view. */
+  readonly branchId: string;
+  readonly revision: number;
+  readonly messageCount: number;
+  readonly entries: readonly ContextObjectEntry[];
+  readonly messages: readonly Message[];
+  readonly metrics: ContextObjectMetrics;
+  readonly cropped: boolean;
+}
+
+export interface ContextObjectManifest {
+  readonly version: typeof CONTEXT_OBJECT_VERSION;
+  readonly sessionId: string;
+  readonly branchId: string;
+  readonly revision: number;
+  readonly observedAt: number;
+  readonly messageCount: number;
+  readonly entryCount: number;
+  readonly cropped: boolean;
+  readonly syncMode: "append" | "noop" | "rebuild";
+  readonly commonPrefixMessages: number;
+  readonly metrics: ContextObjectMetrics;
+  /** Digest of the immutable derived object. */
+  readonly digest: string;
+  /** Backward-compatible path to the current immutable derived object. */
+  readonly snapshot: string;
+  readonly commit?: string;
+  readonly sourceDigest?: string;
+  readonly effectiveDigest?: string;
+}
+
+export interface ContextObjectSyncResult {
+  readonly manifest: ContextObjectManifest;
+  readonly root: string;
+}
+
+function isObject(value: unknown): value is JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function optionalString(value: unknown, fallback = ""): string {
+  return typeof value === "string" ? value : fallback;
+}
+
+function tokenCount(value: unknown): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
+
+function metricsFromBranch(branch: readonly unknown[]): ContextObjectMetrics {
+  const totals = { assistantMessages: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0 };
+  for (const raw of branch) {
+    if (!isObject(raw) || raw.type !== "message" || !isObject(raw.message) || raw.message.role !== "assistant") continue;
+    const usage = isObject(raw.message.usage) ? raw.message.usage : undefined;
+    if (!usage) continue;
+    totals.assistantMessages++;
+    totals.inputTokens += tokenCount(usage.input);
+    totals.outputTokens += tokenCount(usage.output);
+    totals.cacheReadTokens += tokenCount(usage.cacheRead);
+    totals.cacheWriteTokens += tokenCount(usage.cacheWrite);
+    totals.totalTokens += tokenCount(usage.totalTokens);
+  }
+  return totals;
+}
+
+function asPrimeInput(value: unknown): PrimeMessage | PrimeEnvelope {
+  if (!isObject(value)) throw new TypeError("Prime context message must be an object");
+  if (isObject(value.message) && typeof value.message.role === "string") return value as PrimeEnvelope;
+  if (typeof value.role === "string") return value as PrimeMessage;
+  throw new TypeError("Prime context message has no role");
+}
+
+function textFromContent(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  const text: string[] = [];
+  for (const block of content) {
+    if (!isObject(block)) continue;
+    if (block.type === "text" && typeof block.text === "string") text.push(block.text);
+    else if (block.type === "thinking" && typeof block.thinking === "string") text.push(block.thinking);
+    else if (block.type === "toolCall") text.push(`[tool ${optionalString(block.name, "unknown")}] ${stableJson(block.arguments ?? {})}`);
+    else if (block.type === "image") text.push(`[image ${optionalString(block.mimeType, "unknown")}]`);
+  }
+  return text.join("\n");
+}
+
+function cropUtf8(value: string, maxBytes: number): { text: string; truncated: boolean } {
+  const bytes = Buffer.byteLength(value, "utf8");
+  if (bytes <= maxBytes) return { text: value, truncated: false };
+  const suffix = `\n[… ${bytes - maxBytes} UTF-8 bytes omitted …]`;
+  const budget = Math.max(0, maxBytes - Buffer.byteLength(suffix, "utf8"));
+  let end = Math.min(value.length, budget);
+  while (end > 0 && Buffer.byteLength(value.slice(0, end), "utf8") > budget) end--;
+  return { text: value.slice(0, end) + suffix, truncated: true };
+}
+
+async function branchEntry(value: unknown, index: number, files: DurableFileAttachments): Promise<ContextObjectEntry> {
+  if (!isObject(value)) return { index, entryType: "unknown", text: "", truncated: false };
+  const message = isObject(value.message) ? value.message : undefined;
+  const role = typeof message?.role === "string" ? message.role : undefined;
+  const sourceText = role === "bashExecution"
+    ? `${optionalString(message?.command)}\n${optionalString(message?.output)}`
+    : role === "branchSummary" || role === "compactionSummary"
+      ? optionalString(message?.summary)
+      : textFromContent(message?.content ?? value.content);
+  // Persist the exact bytes before any compatibility crop. The attachment
+  // backend verifies sha256 and size when the locator is resolved after restart.
+  const spilled = await spillContextText(files, sourceText, {
+    thresholdBytes: MAX_ENTRY_TEXT_BYTES,
+    previewBytes: 4 * 1024,
+    name: role === "toolResult" ? "tool-result.txt" : "context-entry.txt",
+  });
+  const cropped = spilled.spilled ? { text: spilled.text, truncated: true } : cropUtf8(sourceText, MAX_ENTRY_TEXT_BYTES);
+  return {
+    index,
+    ...(typeof value.id === "string" ? { id: value.id } : {}),
+    ...(typeof value.parentId === "string" || value.parentId === null ? { parentId: value.parentId } : {}),
+    entryType: typeof value.type === "string" ? value.type : "unknown",
+    ...(role === undefined ? {} : { role }),
+    ...(typeof value.customType === "string" ? { customType: value.customType } : {}),
+    text: cropped.text,
+    truncated: cropped.truncated,
+    ...(spilled.spilled ? { contextSpill: spilled.locator } : {}),
+  };
+}
+
+function lstatExists(path: string): boolean {
+  try { lstatSync(path); return true; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+}
+
+function ensurePrivateDirectory(path: string): void {
+  mkdirSync(path, { recursive: true, mode: 0o700 });
+  const stat = lstatSync(path);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`Context object root is not a private directory: ${path}`);
+  chmodSync(path, 0o700);
+}
+
+function atomicPrivateWrite(path: string, content: string): void {
+  const temp = `${path}.${randomBytes(12).toString("hex")}.tmp`;
+  const fd = openSync(temp, "wx", 0o600);
+  try {
+    writeFileSync(fd, content, "utf8");
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  renameSync(temp, path);
+  chmodSync(path, 0o600);
+  let directory: number | undefined;
+  try { directory = openSync(dirname(path), constants.O_RDONLY); fsyncSync(directory); }
+  finally { if (directory !== undefined) closeSync(directory); }
+}
+
+/** Resolve the artifact directory shared with Prime's per-session Python kernel. */
+export function contextObjectRoot(sessionId: string, sessionFile: string | undefined): string | undefined {
+  if (!sessionFile || !/^[A-Za-z0-9._-]{1,128}$/.test(sessionId)) return undefined;
+  const sessionDir = dirname(sessionFile);
+  // RLM child JSONL files already live inside their inherited artifact tree and
+  // PRIME_AGENT sets RLM_SESSION_DIR to that directory. Root sessions—including
+  // custom --session-dir roots—use the sibling session-artifacts/<id> layout.
+  if (sessionDir.split(sep).includes("session-artifacts")) return join(sessionDir, "dsh-context");
+  return join(dirname(sessionDir), "session-artifacts", sessionId, "dsh-context");
+}
+
+/**
+ * Maintains a rebuildable DSH projection and immutable filesystem snapshots.
+ * Prime JSONL remains canonical; this store never edits Prime or DSH history.
+ */
+export class ContextObjectStore {
+  constructor(private readonly attachments: DshImageAttachmentGateway = new LocalDshImageAttachments()) {}
+
+  /** Recover the newest valid committed generation without trusting CURRENT or manifest.json. */
+  recover(ctx: ExtensionContext): PublishResult | undefined {
+    const binding = this.binding(ctx);
+    if (!binding) return undefined;
+    const recovered = new DurableContextStore(binding).recover();
+    return recovered ? { ...recovered, mode: "noop" } : undefined;
+  }
+
+  async sync(ctx: ExtensionContext, inputMessages?: readonly unknown[]): Promise<ContextObjectSyncResult | undefined> {
+    const binding = this.binding(ctx);
+    if (!binding) return undefined;
+    const { sessionId } = binding.binding;
+    const { root } = binding;
+    const branchId = ctx.sessionManager.getLeafId?.() ?? "root";
+    const rawBranch = (ctx.sessionManager.getBranch?.() ?? []) as readonly unknown[];
+    const messages = inputMessages ?? this.sessionMessages(ctx);
+    const selectedMessages = messages;
+    const canonical = await Promise.all(selectedMessages.map((message, index) => primeToDshAsync(
+      asPrimeInput(message),
+      { admitImages: (images) => this.attachments.admitPrimeImages(images) },
+      `prime-${createHash("sha256").update(`${messages.length - selectedMessages.length + index}:`).update(stableJson(message)).digest("hex").slice(0, 32)}`,
+    )));
+    const metrics = metricsFromBranch(rawBranch);
+    const selectedBranch = rawBranch.slice(-MAX_MESSAGES);
+    const store = new DurableContextStore(binding);
+    const files = new DurableFileAttachments({ dshHome: root });
+    const compatibilityEntries = await Promise.all(selectedBranch.map((entry, offset) =>
+      branchEntry(entry, rawBranch.length - selectedBranch.length + offset, files)));
+    const published = await store.publish({
+      source: rawBranch,
+      effective: canonical,
+      converterVersion: "prime-to-dsh-v1",
+      schemaVersion: CONTEXT_OBJECT_VERSION,
+      branchId,
+      observedAt: Date.now(),
+      compatibilityEntries,
+      compatibilityMetrics: { ...metrics },
+      cropped: selectedMessages.length !== messages.length || selectedBranch.length !== rawBranch.length,
+    });
+    const view = published.object.compatibility;
+    const manifest: ContextObjectManifest = {
+      version: CONTEXT_OBJECT_VERSION,
+      sessionId,
+      branchId: view.branchId,
+      revision: published.commit.generation,
+      observedAt: published.commit.observedAt,
+      messageCount: view.messageCount,
+      entryCount: view.entries.length,
+      cropped: view.cropped,
+      syncMode: published.mode,
+      commonPrefixMessages: published.commit.commonPrefix,
+      metrics,
+      digest: published.commit.object,
+      snapshot: `objects/${published.commit.object}.json`,
+      commit: published.commitDigest,
+      sourceDigest: published.commit.sourceDigest,
+      effectiveDigest: published.commit.effectiveDigest,
+    };
+    ensurePrivateDirectory(root);
+    const branchKey = createHash("sha256").update(branchId).digest("hex");
+    const immutableManifest = join(root, `manifest-${branchKey}-${published.commitDigest}.json`);
+    if (!lstatExists(immutableManifest)) atomicPrivateWrite(immutableManifest, `${JSON.stringify(manifest)}\n`);
+    atomicPrivateWrite(join(root, `manifest-${branchKey}.json`), `${JSON.stringify(manifest)}\n`);
+    // Compatibility pointer only. Authoritative readers pass an immutable digest or expected branch.
+    atomicPrivateWrite(join(root, "manifest.json"), `${JSON.stringify(manifest)}\n`);
+    return { manifest, root };
+  }
+
+  private sessionMessages(ctx: ExtensionContext): readonly unknown[] {
+    const manager = ctx.sessionManager as typeof ctx.sessionManager & { buildSessionContext?: () => { messages?: readonly unknown[] } };
+    try {
+      const built = manager.buildSessionContext?.();
+      return Array.isArray(built?.messages) ? built.messages : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private binding(ctx: ExtensionContext): ConstructorParameters<typeof DurableContextStore>[0] | undefined {
+    const sessionId = ctx.sessionManager.getSessionId?.() ?? "";
+    const primeSessionFile = ctx.sessionManager.getSessionFile?.();
+    const root = contextObjectRoot(sessionId, primeSessionFile);
+    if (!sessionId || !primeSessionFile || !root) return undefined;
+    return { root, binding: { sessionId, primeSessionFile } };
+  }
+}

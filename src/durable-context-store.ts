@@ -1,0 +1,477 @@
+import { createHash, randomBytes } from "node:crypto";
+import {
+  closeSync, constants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync,
+  realpathSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync,
+} from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+
+export const DURABLE_STORE_VERSION = "prime-agent-dsh/durable-store-v1" as const;
+export const DURABLE_OBJECT_VERSION = "prime-agent-dsh/derived-object-v1" as const;
+export const DURABLE_COMMIT_VERSION = "prime-agent-dsh/derived-commit-v1" as const;
+const SHA256 = /^[a-f0-9]{64}$/;
+
+type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
+
+export interface StoreBinding {
+  readonly sessionId: string;
+  /** Path to Prime's canonical JSONL. It is identified by its real path, never read or modified. */
+  readonly primeSessionFile: string;
+}
+export interface PublishInput {
+  /** Exact Prime records used to derive this view. */
+  readonly source: readonly unknown[];
+  /** Exact converted records consumed by the derived context reader. */
+  readonly effective: readonly unknown[];
+  readonly converterVersion: string;
+  readonly schemaVersion: string;
+  /** Optional bounded records used only by the backward-compatible reader view. */
+  readonly compatibilityEntries?: readonly unknown[];
+  readonly compatibilityMetrics?: Readonly<Record<string, number>>;
+  readonly cropped?: boolean;
+  /** Optional exact leaf identifier for diagnostic/compatibility views. */
+  readonly branchId?: string;
+  readonly observedAt?: number;
+}
+export interface CompatibilityEntry {
+  readonly index: number;
+  readonly text: string;
+  readonly truncated: boolean;
+  readonly [field: string]: Json;
+}
+export interface CompatibilityView {
+  readonly version: typeof DURABLE_STORE_VERSION;
+  readonly sessionId: string;
+  readonly branchId: string;
+  readonly revision: number;
+  readonly messageCount: number;
+  readonly entries: readonly CompatibilityEntry[];
+  readonly messages: readonly Json[];
+  readonly cropped: boolean;
+  readonly sourceDigest: string;
+  readonly effectiveDigest: string;
+  readonly converterVersion: string;
+  readonly schemaVersion: string;
+  readonly metrics?: Readonly<Record<string, number>>;
+}
+export interface DerivedObject {
+  readonly version: typeof DURABLE_OBJECT_VERSION;
+  readonly bindingDigest: string;
+  readonly sourceDigest: string;
+  readonly effectiveDigest: string;
+  readonly sourceEntryDigests: readonly string[];
+  readonly effectiveEntryDigests: readonly string[];
+  readonly effective: readonly Json[];
+  readonly compatibility: CompatibilityView;
+}
+export interface DerivedCommit {
+  readonly version: typeof DURABLE_COMMIT_VERSION;
+  readonly bindingDigest: string;
+  readonly generation: number;
+  readonly parent: string | null;
+  readonly object: string;
+  readonly sourceDigest: string;
+  readonly effectiveDigest: string;
+  readonly converterVersion: string;
+  readonly schemaVersion: string;
+  readonly mode: "append" | "rebuild";
+  readonly commonPrefix: number;
+  readonly observedAt: number;
+}
+export interface RecoveredGeneration {
+  readonly commitDigest: string;
+  readonly commit: DerivedCommit;
+  readonly object: DerivedObject;
+}
+export interface PublishResult extends RecoveredGeneration { readonly mode: "append" | "rebuild" | "noop" }
+export type FaultBoundary = "object-durable" | "commit-durable" | "head-durable" | "current-temp-durable" | "current-replaced";
+export interface DurableContextStoreOptions {
+  readonly root: string;
+  readonly binding: StoreBinding;
+  readonly recoveryScanLimit?: number;
+  readonly maxEntries?: number;
+  readonly maxEntryBytes?: number;
+  readonly maxObjectBytes?: number;
+  readonly lockTimeoutMs?: number;
+  readonly staleLockMs?: number;
+  readonly fault?: (boundary: FaultBoundary) => void;
+  readonly now?: () => number;
+}
+
+function wellFormed(value: string): boolean {
+  for (let i = 0; i < value.length; i++) { const code = value.charCodeAt(i); if (code >= 0xd800 && code <= 0xdbff) { const next = value.charCodeAt(++i); if (!(next >= 0xdc00 && next <= 0xdfff)) return false; } else if (code >= 0xdc00 && code <= 0xdfff) return false; } return true;
+}
+function canonical(value: unknown, seen = new Set<object>()): string {
+  if (value === null) return "null";
+  if (typeof value === "string") { if (!wellFormed(value)) throw new TypeError("derived context strings must be well-formed Unicode"); return JSON.stringify(value); }
+  if (typeof value === "boolean") return JSON.stringify(value);
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new TypeError("derived context must contain finite JSON numbers");
+    return JSON.stringify(Object.is(value, -0) ? 0 : value);
+  }
+  if (Array.isArray(value)) {
+    if (seen.has(value)) throw new TypeError("derived context must not contain cycles");
+    seen.add(value); const result = `[${value.map((item) => canonical(item, seen)).join(",")}]`; seen.delete(value); return result;
+  }
+  if (typeof value === "object") {
+    if (seen.has(value)) throw new TypeError("derived context must not contain cycles");
+    const record = value as Record<string, unknown>;
+    const prototype = Reflect.getPrototypeOf(record);
+    if (prototype !== Object.prototype && prototype !== null) throw new TypeError("derived context must contain plain JSON objects");
+    seen.add(record);
+    const fields: string[] = [];
+    for (const key of Object.keys(record).sort()) {
+      const item = record[key];
+      if (item === undefined || typeof item === "function" || typeof item === "symbol" || typeof item === "bigint") {
+        throw new TypeError(`derived context field ${key} is not JSON`);
+      }
+      fields.push(`${JSON.stringify(key)}:${canonical(item, seen)}`);
+    }
+    seen.delete(record); return `{${fields.join(",")}}`;
+  }
+  throw new TypeError("derived context must be JSON");
+}
+function digest(value: unknown): string { return createHash("sha256").update(canonical(value)).digest("hex"); }
+function safeFileText(path: string, maximum = 32 * 1024 * 1024): string {
+  const stat = lstatSync(path);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > maximum) throw new Error(`unsafe or oversized durable store file: ${path}`);
+  return readFileSync(path, "utf8");
+}
+function parseJson(path: string): unknown { return JSON.parse(safeFileText(path)) as unknown; }
+function object(value: unknown): Record<string, unknown> | undefined { return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined; }
+function safeInteger(value: unknown): value is number { return typeof value === "number" && Number.isSafeInteger(value) && value > 0; }
+function syncDirectory(path: string): void {
+  let fd: number | undefined;
+  try { fd = openSync(path, constants.O_RDONLY); fsyncSync(fd); } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "EINVAL" && code !== "ENOTSUP" && code !== "EBADF") throw error;
+  } finally { if (fd !== undefined) closeSync(fd); }
+}
+function canonicalNewPath(path: string): string {
+  let cursor = resolve(path); const suffix: string[] = [];
+  while (!existsSync(cursor)) { suffix.unshift(cursor.slice(dirname(cursor).length + (dirname(cursor) === sep ? 0 : 1))); cursor = dirname(cursor); }
+  return join(realpathSync(cursor), ...suffix);
+}
+function ensureNoSymlink(path: string): void {
+  const absolute = resolve(path); let cursor = absolute;
+  const pending: string[] = [];
+  while (!existsSync(cursor)) { pending.push(cursor); const parent = dirname(cursor); if (parent === cursor) break; cursor = parent; }
+  while (true) {
+    const stat = lstatSync(cursor);
+    if (stat.isSymbolicLink()) throw new Error(`symlink is not allowed in durable store path: ${cursor}`);
+    const parent = dirname(cursor); if (parent === cursor) break; cursor = parent;
+  }
+  void pending;
+}
+function privateDirectory(path: string): void {
+  ensureNoSymlink(path); mkdirSync(path, { recursive: true, mode: 0o700 });
+  const stat = lstatSync(path); if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`unsafe durable store directory: ${path}`);
+}
+function assertChild(root: string, path: string): void {
+  const rel = relative(root, path);
+  if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error(`path escapes durable store: ${path}`);
+}
+function atomicWrite(path: string, contents: string, replace: boolean, beforeRename?: () => void): void {
+  const directory = dirname(path); const temporary = join(directory, `.tmp-${process.pid}-${randomBytes(12).toString("hex")}`);
+  const fd = openSync(temporary, "wx", 0o600);
+  try { writeFileSync(fd, contents, "utf8"); fsyncSync(fd); } finally { closeSync(fd); }
+  beforeRename?.();
+  try {
+    if (!replace && existsSync(path)) { unlinkSync(temporary); return; }
+    renameSync(temporary, path); syncDirectory(directory);
+  } catch (error) { try { unlinkSync(temporary); } catch { /* best effort */ } throw error; }
+}
+function textOf(value: unknown): string {
+  const record = object(value);
+  if (record) {
+    if (typeof record.text === "string") return record.text;
+    if (typeof record.content === "string") return record.content;
+    const message = object(record.message);
+    if (typeof message?.content === "string") return message.content;
+    if (typeof message?.summary === "string") return message.summary;
+  }
+  return canonical(value);
+}
+function cropUtf8(value: string, maximum: number): { text: string; truncated: boolean } {
+  const total = Buffer.byteLength(value);
+  if (total <= maximum) return { text: value, truncated: false };
+  const suffix = `\n[… ${total - maximum} UTF-8 bytes omitted …]`;
+  const budget = Math.max(0, maximum - Buffer.byteLength(suffix));
+  let end = Math.min(value.length, budget);
+  while (end > 0 && Buffer.byteLength(value.slice(0, end)) > budget) end--;
+  return { text: value.slice(0, end) + suffix, truncated: true };
+}
+function sleep(ms: number): Promise<void> { return new Promise((accept) => setTimeout(accept, ms)); }
+
+/** A rebuildable, content-addressed publication store. Prime's JSONL remains authoritative. */
+export class DurableContextStore {
+  readonly root: string;
+  readonly binding: Readonly<StoreBinding & { primeSessionFile: string }>;
+  readonly bindingDigest: string;
+  private readonly scanLimit: number;
+  private readonly maxEntries: number;
+  private readonly maxEntryBytes: number;
+  private readonly maxObjectBytes: number;
+  private readonly lockTimeout: number;
+  private readonly staleLock: number;
+  private readonly fault?: (boundary: FaultBoundary) => void;
+  private readonly now: () => number;
+
+  constructor(options: DurableContextStoreOptions) {
+    if (!isAbsolute(options.root)) throw new Error("durable store root must be absolute");
+    if (!/^[A-Za-z0-9._-]{1,128}$/.test(options.binding.sessionId)) throw new Error("invalid session id");
+    if (!isAbsolute(options.binding.primeSessionFile)) throw new Error("Prime session file must be absolute");
+    if (existsSync(options.root) && lstatSync(options.root).isSymbolicLink()) throw new Error(`symlink is not allowed in durable store path: ${options.root}`);
+    const canonicalRoot = canonicalNewPath(options.root);
+    ensureNoSymlink(canonicalRoot);
+    const sessionFile = realpathSync(options.binding.primeSessionFile);
+    const sessionStat = statSync(sessionFile); if (!sessionStat.isFile()) throw new Error("Prime session binding is not a file");
+    this.root = canonicalRoot;
+    this.binding = Object.freeze({ sessionId: options.binding.sessionId, primeSessionFile: sessionFile });
+    this.bindingDigest = digest({ sessionId: this.binding.sessionId, primeSessionFile: sessionFile });
+    this.scanLimit = options.recoveryScanLimit ?? 128;
+    this.maxEntries = options.maxEntries ?? 2_000;
+    this.maxEntryBytes = options.maxEntryBytes ?? 64 * 1024;
+    this.maxObjectBytes = options.maxObjectBytes ?? 16 * 1024 * 1024;
+    this.lockTimeout = options.lockTimeoutMs ?? 10_000;
+    this.staleLock = options.staleLockMs ?? 120_000;
+    this.fault = options.fault; this.now = options.now ?? Date.now;
+    if (![this.scanLimit, this.maxEntries, this.maxEntryBytes, this.maxObjectBytes, this.lockTimeout, this.staleLock].every((v) => Number.isSafeInteger(v) && v > 0)) throw new Error("store limits must be positive integers");
+    this.initialize();
+  }
+
+  private initialize(): void {
+    privateDirectory(this.root);
+    for (const name of ["objects", "commits", "heads", "quarantine"]) privateDirectory(join(this.root, name));
+    const bindingPath = join(this.root, "BINDING");
+    const value = `${canonical({ version: DURABLE_STORE_VERSION, ...this.binding, bindingDigest: this.bindingDigest })}\n`;
+    if (existsSync(bindingPath)) {
+      const stat = lstatSync(bindingPath); if (!stat.isFile() || stat.isSymbolicLink() || readFileSync(bindingPath, "utf8") !== value) throw new Error("durable store is bound to another Prime session");
+    } else atomicWrite(bindingPath, value, false);
+  }
+
+  private currentCandidate(): string | undefined {
+    const path = join(this.root, "CURRENT");
+    try { const value = safeFileText(path).trim(); return SHA256.test(value) ? value : undefined; } catch { return undefined; }
+  }
+  private validate(commitDigest: string): RecoveredGeneration | undefined {
+    if (!SHA256.test(commitDigest)) return undefined;
+    try {
+      const commitPath = join(this.root, "commits", `${commitDigest}.json`); assertChild(this.root, commitPath);
+      const commitRaw = safeFileText(commitPath).trim();
+      if (createHash("sha256").update(commitRaw).digest("hex") !== commitDigest) return undefined;
+      const c = object(JSON.parse(commitRaw));
+      if (!c || c.version !== DURABLE_COMMIT_VERSION || c.bindingDigest !== this.bindingDigest || !safeInteger(c.generation)
+        || typeof c.object !== "string" || !SHA256.test(c.object) || typeof c.sourceDigest !== "string" || typeof c.effectiveDigest !== "string"
+        || !SHA256.test(c.sourceDigest) || !SHA256.test(c.effectiveDigest) || typeof c.converterVersion !== "string" || !c.converterVersion
+        || typeof c.schemaVersion !== "string" || !c.schemaVersion || (c.mode !== "append" && c.mode !== "rebuild")
+        || !Number.isSafeInteger(c.commonPrefix) || (c.parent !== null && (typeof c.parent !== "string" || !SHA256.test(c.parent)))) return undefined;
+      const objectPath = join(this.root, "objects", `${c.object}.json`); assertChild(this.root, objectPath);
+      const objectRaw = safeFileText(objectPath).trim();
+      if (createHash("sha256").update(objectRaw).digest("hex") !== c.object) return undefined;
+      const o = object(JSON.parse(objectRaw));
+      if (!o || o.version !== DURABLE_OBJECT_VERSION || o.bindingDigest !== this.bindingDigest || o.sourceDigest !== c.sourceDigest || o.effectiveDigest !== c.effectiveDigest || !Array.isArray(o.sourceEntryDigests) || !Array.isArray(o.effectiveEntryDigests) || !Array.isArray(o.effective) || !object(o.compatibility)) return undefined;
+      const sourceEntryDigests: unknown[] = o.sourceEntryDigests;
+      const effectiveEntryDigests: unknown[] = o.effectiveEntryDigests;
+      const effective: unknown[] = o.effective;
+      if (digest(effective) !== o.effectiveDigest || !sourceEntryDigests.every((item) => typeof item === "string" && SHA256.test(item))
+        || !effectiveEntryDigests.every((item) => typeof item === "string" && SHA256.test(item))
+        || effectiveEntryDigests.length !== effective.length
+        || effective.some((item, index) => digest(item) !== effectiveEntryDigests[index])) return undefined;
+      const compatibility = object(o.compatibility);
+      if (!compatibility || compatibility.version !== DURABLE_STORE_VERSION || compatibility.sessionId !== this.binding.sessionId
+        || typeof compatibility.branchId !== "string" || compatibility.branchId.length === 0 || compatibility.branchId.length > 512
+        || compatibility.revision !== c.generation || compatibility.messageCount !== effective.length || !Array.isArray(compatibility.entries)
+        || !Array.isArray(compatibility.messages) || digest(compatibility.messages) !== o.effectiveDigest || typeof compatibility.cropped !== "boolean"
+        || compatibility.sourceDigest !== c.sourceDigest || compatibility.effectiveDigest !== c.effectiveDigest
+        || compatibility.converterVersion !== c.converterVersion || compatibility.schemaVersion !== c.schemaVersion
+        || typeof c.observedAt !== "number" || !Number.isFinite(c.observedAt) || c.observedAt < 0
+        || (c.commonPrefix as number) < 0 || (c.commonPrefix as number) > sourceEntryDigests.length
+        || sourceEntryDigests.length < (compatibility.entries as unknown[]).length) return undefined;
+      for (const rawEntry of compatibility.entries as unknown[]) { const entry = object(rawEntry); if (!entry || !Number.isSafeInteger(entry.index) || (entry.index as number) < 0 || (entry.index as number) >= sourceEntryDigests.length || typeof entry.text !== "string" || typeof entry.truncated !== "boolean") return undefined; }
+      return { commitDigest, commit: c as unknown as DerivedCommit, object: o as unknown as DerivedObject };
+    } catch { return undefined; }
+  }
+
+  private headGenerationNumbers(): number[] {
+    try { return requireDirectory(join(this.root, "heads")).flatMap(name => /^([0-9]{16})-[a-f0-9]{64}$/.exec(name)?.[1]).map(Number).filter(Number.isSafeInteger); }
+    catch { return []; }
+  }
+
+  private recoveredGenerations(): RecoveredGeneration[] {
+    const names = (() => { try { return requireDirectory(join(this.root, "heads")); } catch { return []; } })()
+      .filter(name => /^\d{16}-[a-f0-9]{64}$/.test(name)).sort().reverse();
+    const values: RecoveredGeneration[] = [];
+    for (const name of names) try {
+      const digestValue = name.slice(17); if (safeFileText(join(this.root, "heads", name), 1024).trim() !== digestValue) continue;
+      const value = this.validate(digestValue); if (value && value.commit.generation === Number(name.slice(0, 16))) { values.push(value); if (values.length >= this.scanLimit) break; }
+    } catch { /* skip poisoned head */ }
+    return values;
+  }
+
+  /** CURRENT is tried only as an optimization. Immutable heads are the recovery authority. */
+  recover(branchId?: string): RecoveredGeneration | undefined {
+    const hinted = this.currentCandidate();
+    const hintedGeneration = hinted ? this.validate(hinted) : undefined;
+    let hint: RecoveredGeneration | undefined;
+    if (hintedGeneration) {
+      const head = join(this.root, "heads", `${String(hintedGeneration.commit.generation).padStart(16, "0")}-${hintedGeneration.commitDigest}`);
+      try { if (safeFileText(head).trim() === hintedGeneration.commitDigest) hint = hintedGeneration; } catch { /* CURRENT is not authority */ }
+    }
+    const names = (() => { try { return requireDirectory(join(this.root, "heads")); } catch { return []; } })()
+      .filter((name) => /^\d{16}-[a-f0-9]{64}$/.test(name)).sort().reverse();
+    let best = hint && (!branchId || hint.object.compatibility.branchId === branchId) ? hint : undefined;
+    for (const name of names) {
+      const namedGeneration = Number(name.slice(0, 16));
+      const namedDigest = name.slice(17);
+      let headValid = false;
+      try { headValid = safeFileText(join(this.root, "heads", name)).trim() === namedDigest; } catch { /* ignored corruption */ }
+      const candidate = headValid ? this.validate(namedDigest) : undefined;
+      if (candidate && candidate.commit.generation === namedGeneration && (!branchId || candidate.object.compatibility.branchId === branchId) && (!best || candidate.commit.generation > best.commit.generation)) best = candidate;
+    }
+    return best;
+  }
+
+  async publish(input: PublishInput): Promise<PublishResult> {
+    const release = await this.acquire();
+    try { this.cleanup(); return this.publishLocked(input); } finally { release(); }
+  }
+
+  private writeImmutable(path: string, contents: string): void {
+    if (existsSync(path)) {
+      try { if (safeFileText(path) === contents) return; } catch { /* quarantine below */ }
+      const quarantined = join(this.root, "quarantine", `${this.now()}-${randomBytes(8).toString("hex")}-${path.slice(path.lastIndexOf(sep) + 1)}`);
+      renameSync(path, quarantined); syncDirectory(dirname(path)); syncDirectory(join(this.root, "quarantine"));
+    }
+    atomicWrite(path, contents, false);
+  }
+
+  private publishLocked(input: PublishInput): PublishResult {
+    if (!input.converterVersion || !input.schemaVersion) throw new Error("converterVersion and schemaVersion are required");
+    const source = input.source.map((item) => JSON.parse(canonical(item)) as Json);
+    const effective = input.effective.map((item) => JSON.parse(canonical(item)) as Json);
+    const sourceDigest = digest(source), effectiveDigest = digest(effective);
+    const sourceEntryDigests = source.map(digest);
+    const effectiveEntryDigests = effective.map(digest);
+    const allRecovered = this.recoveredGenerations();
+    const branchId = input.branchId ?? "root";
+    const isAncestor = (value: RecoveredGeneration): boolean => value.object.sourceEntryDigests.length <= sourceEntryDigests.length
+      && value.object.effectiveEntryDigests.length <= effectiveEntryDigests.length
+      && value.object.sourceEntryDigests.every((item, index) => item === sourceEntryDigests[index])
+      && value.object.effectiveEntryDigests.every((item, index) => item === effectiveEntryDigests[index]);
+    const ancestors = allRecovered.filter(isAncestor).sort((a, b) => b.object.sourceEntryDigests.length - a.object.sourceEntryDigests.length || b.commit.generation - a.commit.generation);
+    const prior = ancestors[0] ?? allRecovered.find(value => value.object.compatibility.branchId === branchId);
+    const nextGeneration = Math.max(0, ...this.headGenerationNumbers()) + 1;
+    const same = prior && prior.commit.sourceDigest === sourceDigest && prior.commit.effectiveDigest === effectiveDigest
+      && prior.commit.converterVersion === input.converterVersion && prior.commit.schemaVersion === input.schemaVersion
+      && prior.object.compatibility.branchId === branchId;
+    if (same) return { ...prior, mode: "noop" };
+    let prefix = 0;
+    if (prior && prior.commit.converterVersion === input.converterVersion && prior.commit.schemaVersion === input.schemaVersion) {
+      const old = prior.object.sourceEntryDigests;
+      while (prefix < old.length && prefix < sourceEntryDigests.length && old[prefix] === sourceEntryDigests[prefix]) prefix++;
+    }
+    let effectivePrefix = 0;
+    if (prior) {
+      const oldEffective = prior.object.effectiveEntryDigests;
+      while (effectivePrefix < oldEffective.length && effectivePrefix < effectiveEntryDigests.length && oldEffective[effectivePrefix] === effectiveEntryDigests[effectivePrefix]) effectivePrefix++;
+    }
+    const append = !!prior && prefix === prior.object.sourceEntryDigests.length && sourceEntryDigests.length > prefix
+      && effectivePrefix === prior.object.effectiveEntryDigests.length;
+    const compatibilitySource = (input.compatibilityEntries ?? source).map((item) => JSON.parse(canonical(item)) as Json);
+    const selected = compatibilitySource.slice(-this.maxEntries);
+    const entries: CompatibilityEntry[] = selected.map((entry, offset) => {
+      const originalIndex = compatibilitySource.length - selected.length + offset;
+      const base = object(entry) ?? {};
+      return { ...base, index: typeof base.index === "number" ? base.index : originalIndex, ...cropUtf8(textOf(entry), this.maxEntryBytes) };
+    });
+    const metrics = input.compatibilityMetrics
+      ? JSON.parse(canonical(input.compatibilityMetrics)) as Record<string, number>
+      : undefined;
+    const compatibility: CompatibilityView = {
+      version: DURABLE_STORE_VERSION, sessionId: this.binding.sessionId, branchId,
+      revision: nextGeneration, messageCount: effective.length, entries, messages: effective,
+      cropped: input.cropped === true || selected.length !== compatibilitySource.length || entries.some((entry) => entry.truncated), sourceDigest, effectiveDigest,
+      converterVersion: input.converterVersion, schemaVersion: input.schemaVersion,
+      ...(metrics ? { metrics } : {}),
+    };
+    const derived: DerivedObject = { version: DURABLE_OBJECT_VERSION, bindingDigest: this.bindingDigest, sourceDigest, effectiveDigest, sourceEntryDigests, effectiveEntryDigests, effective, compatibility };
+    const objectText = canonical(derived);
+    if (Buffer.byteLength(objectText, "utf8") > this.maxObjectBytes) throw new Error(`derived context object exceeds ${this.maxObjectBytes} bytes`);
+    const objectDigest = createHash("sha256").update(objectText).digest("hex");
+    this.writeImmutable(join(this.root, "objects", `${objectDigest}.json`), `${objectText}\n`); this.fault?.("object-durable");
+    const commit: DerivedCommit = {
+      version: DURABLE_COMMIT_VERSION, bindingDigest: this.bindingDigest, generation: nextGeneration,
+      parent: prior?.commitDigest ?? null, object: objectDigest, sourceDigest, effectiveDigest,
+      converterVersion: input.converterVersion, schemaVersion: input.schemaVersion, mode: append ? "append" : "rebuild",
+      commonPrefix: prefix, observedAt: input.observedAt ?? 0,
+    };
+    const commitText = canonical(commit), commitDigest = createHash("sha256").update(commitText).digest("hex");
+    this.writeImmutable(join(this.root, "commits", `${commitDigest}.json`), `${commitText}\n`); this.fault?.("commit-durable");
+    const generation = String(commit.generation).padStart(16, "0");
+    this.writeImmutable(join(this.root, "heads", `${generation}-${commitDigest}`), `${commitDigest}\n`); this.fault?.("head-durable");
+    atomicWrite(join(this.root, "CURRENT"), `${commitDigest}\n`, true, () => this.fault?.("current-temp-durable")); this.fault?.("current-replaced");
+    return { commitDigest, commit, object: derived, mode: commit.mode };
+  }
+
+  private async acquire(): Promise<() => void> {
+    const path = join(this.root, "LOCK"); const deadline = this.now() + this.lockTimeout;
+    for (;;) {
+      try {
+        mkdirSync(path, { mode: 0o700 });
+        writeFileSync(join(path, "owner.json"), canonical({ pid: process.pid, started: this.now(), nonce: randomBytes(16).toString("hex") }), { flag: "wx", mode: 0o600 });
+        syncDirectory(this.root);
+        return () => { try { rmSync(path, { recursive: true, force: true }); syncDirectory(this.root); } catch { /* process exit also releases by staleness */ } };
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        this.breakStaleLock(path);
+        if (this.now() >= deadline) throw new Error("timed out acquiring durable context store lock", { cause: error });
+        await sleep(10 + Math.floor(Math.random() * 20));
+      }
+    }
+  }
+  private breakStaleLock(path: string): void {
+    try {
+      const age = this.now() - lstatSync(path).mtimeMs; if (age < this.staleLock) return;
+      const owner = object(parseJson(join(path, "owner.json"))); const pid = owner?.pid;
+      if (typeof pid === "number" && Number.isSafeInteger(pid)) {
+        try { process.kill(pid, 0); return; } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") return; }
+      }
+      renameSync(path, join(this.root, `quarantine`, `stale-lock-${this.now()}-${randomBytes(4).toString("hex")}`)); syncDirectory(this.root);
+    } catch { /* another process won, or the lock cannot safely be proven stale */ }
+  }
+  private cleanup(): void {
+    const cutoff = this.now() - this.staleLock;
+    for (const directory of [this.root, join(this.root, "objects"), join(this.root, "commits"), join(this.root, "heads")]) {
+      for (const name of requireDirectory(directory)) {
+        if (!name.startsWith(".tmp-")) continue;
+        const path = join(directory, name);
+        try { if (lstatSync(path).mtimeMs < cutoff) unlinkSync(path); } catch { /* best effort */ }
+      }
+    }
+    // A crash can leave a durable object or commit before its immutable head.
+    // Only collect files older than the stale window while holding the writer lock.
+    const headed = new Set(requireDirectory(join(this.root, "heads"))
+      .filter((name) => /^\d{16}-[a-f0-9]{64}$/.test(name)).map((name) => name.slice(17)));
+    const referencedObjects = new Set<string>();
+    for (const name of requireDirectory(join(this.root, "commits"))) {
+      const match = /^([a-f0-9]{64})\.json$/.exec(name); if (!match) continue;
+      const path = join(this.root, "commits", name);
+      if (!headed.has(match[1] ?? "")) {
+        try { if (lstatSync(path).mtimeMs < cutoff) unlinkSync(path); } catch { /* best effort */ }
+        continue;
+      }
+      try { const value = object(parseJson(path)); if (typeof value?.object === "string" && SHA256.test(value.object)) referencedObjects.add(value.object); } catch { /* corrupt commits are ignored */ }
+    }
+    for (const name of requireDirectory(join(this.root, "objects"))) {
+      const match = /^([a-f0-9]{64})\.json$/.exec(name); if (!match || referencedObjects.has(match[1] ?? "")) continue;
+      const path = join(this.root, "objects", name);
+      try { if (lstatSync(path).mtimeMs < cutoff) unlinkSync(path); } catch { /* best effort */ }
+    }
+    syncDirectory(join(this.root, "objects")); syncDirectory(join(this.root, "commits"));
+  }
+}
+
+function requireDirectory(path: string): string[] {
+  const stat = lstatSync(path); if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`unsafe durable store directory: ${path}`);
+  return readdirSync(path);
+}

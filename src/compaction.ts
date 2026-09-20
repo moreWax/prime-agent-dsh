@@ -1,4 +1,6 @@
 import type { CompactionResult, ExtensionAPI, SessionBeforeCompactEvent, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { heuristicTokenAdapter } from "./context-pressure.js";
+import { runCompactionPlanning, planStandaloneCompaction, type PlanningOutcome } from "./standalone-compaction-planner.js";
 
 type AgentMessage = SessionBeforeCompactEvent["preparation"]["messagesToSummarize"][number];
 
@@ -31,6 +33,8 @@ export interface CompactionPlan {
   readonly retainedPrefixMessageCount: number;
   readonly pruned: readonly ToolResultPruneFact[];
   readonly charsRemoved: number;
+  /** Replay-safe deterministic observation of the same Prime compaction seam. */
+  readonly standalonePlanning: PlanningOutcome;
   readonly preparation: SessionBeforeCompactEvent["preparation"];
 }
 
@@ -106,7 +110,7 @@ export function pruneToolResults(inputMessages: readonly AgentMessage[], policyI
 
 
 export function loadCompactionPlannerConfig(modeValue = process.env.PRIME_DSH_COMPACTION_MODE): CompactionPlannerConfig {
-  const mode = modeValue?.trim() || "off";
+  const mode = modeValue?.trim() || "active";
   if (mode !== "off" && mode !== "shadow" && mode !== "active") throw new TypeError("PRIME_DSH_COMPACTION_MODE must be off, shadow, or active");
   const envInteger = (name: string, fallback: number): number => {
     const raw = process.env[name];
@@ -122,11 +126,22 @@ export function loadCompactionPlannerConfig(modeValue = process.env.PRIME_DSH_CO
 /** Pure DSH-style plan: preserve Prime's balanced durable cut and prune only its summarized region. */
 export function planCompaction(event: SessionBeforeCompactEvent, policy: Partial<ToolResultPrunePolicy> = {}): CompactionPlan {
   const pruned = pruneToolResults(event.preparation.messagesToSummarize, policy);
+  const nodes = event.preparation.messagesToSummarize.map((message, index) => {
+    const candidate = message as AgentMessage & { id?: string; sourceSeq?: number };
+    const compactMessage = { id: candidate.id ?? `prime-summary-${index}`, role: message.role,
+      content: "content" in message ? message.content : message,
+      ...(candidate.sourceSeq === undefined ? {} : { sourceSeq: candidate.sourceSeq }) };
+    return { message: compactMessage, tokens: heuristicTokenAdapter.estimateMessage(compactMessage) };
+  });
+  const standalonePlanning = runCompactionPlanning("active", () => planStandaloneCompaction(nodes, {
+    mode: "active", contextWindow: Math.max(1, event.preparation.tokensBefore), thresholdRatio: 1,
+    retainTokens: Math.min(20_480, Math.floor(event.preparation.tokensBefore / 4)), maxOverflowRetries: 1,
+  }, event.reason === "overflow" ? "context-overflow" : "pressure"));
   return Object.freeze({
     version: 1, reason: event.reason, firstKeptEntryId: event.preparation.firstKeptEntryId,
     tokensBefore: event.preparation.tokensBefore, isSplitTurn: event.preparation.isSplitTurn,
     summarizedMessageCount: pruned.messages.length, retainedPrefixMessageCount: event.preparation.turnPrefixMessages.length,
-    pruned: Object.freeze(pruned.facts), charsRemoved: pruned.charsRemoved,
+    pruned: Object.freeze(pruned.facts), charsRemoved: pruned.charsRemoved, standalonePlanning,
     preparation: { ...event.preparation, messagesToSummarize: pruned.messages },
   });
 }
@@ -145,7 +160,14 @@ export class DurableCompactionController {
         const plan = planCompaction(event, this.config.pruning);
         this.state = { ...this.state, plans: this.state.plans + 1, lastPlan: plan, lastError: undefined };
         if (this.config.mode === "shadow") return;
+        if (event.signal.aborted) throw new Error("compaction aborted before invocation");
         const compaction = await this.compact(event, ctx, plan);
+        if (event.signal.aborted) throw new Error("compaction aborted before commit");
+        if (!compaction || typeof compaction.summary !== "string" || !compaction.summary.trim()
+          || compaction.firstKeptEntryId !== plan.firstKeptEntryId || compaction.tokensBefore !== plan.tokensBefore
+          || (compaction.estimatedTokensAfter !== undefined && (!Number.isFinite(compaction.estimatedTokensAfter) || compaction.estimatedTokensAfter < 0))) {
+          throw new Error("Prime compactor returned an invalid or mismatched durable cut");
+        }
         this.state = { ...this.state, active: this.state.active + 1 };
         return { compaction };
       } catch (error) {

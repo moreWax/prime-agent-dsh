@@ -71,3 +71,13 @@ test("active returns a CompactionResult only through session_before_compact and 
   new DurableCompactionController({ mode: "active", pruning: resolvePrunePolicy() }, async () => { throw new Error("down"); }).register(broken as any);
   assert.equal(await broken.handlers.session_before_compact!(event([]), ctx), undefined);
 });
+
+
+test("active compaction rejects mismatched cuts and aborts fail-open",async()=>{
+ const malformed=new FakePi();const bad=new DurableCompactionController({mode:"active",pruning:resolvePrunePolicy()},async()=>({summary:"ok",firstKeptEntryId:"wrong",tokensBefore:1000} as any));bad.register(malformed as any);assert.equal(await malformed.handlers.session_before_compact!(event([]),ctx),undefined);assert.match(bad.diagnostics().lastError!,/mismatched durable cut/);
+ const abortedEvent=event([]);void abortedEvent.signal;const controller=new AbortController();const e={...abortedEvent,signal:controller.signal} as SessionBeforeCompactEvent;const pi=new FakePi();let release!:()=>void;const waiting=new Promise<void>(resolve=>{release=resolve});new DurableCompactionController({mode:"active",pruning:resolvePrunePolicy()},async()=>{await waiting;return {summary:"ok",firstKeptEntryId:"keep",tokensBefore:1000} as any}).register(pi as any);const pending=pi.handlers.session_before_compact!(e,ctx) as Promise<unknown>;controller.abort();release();assert.equal(await pending,undefined);
+});
+
+test("planner keeps tool call/result blocks and non-text content in exact order",()=>{
+ const call={role:"assistant",content:[{type:"toolCall",id:"call-1",name:"read",arguments:{path:"x"}}],api:"a",provider:"p",model:"m",usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}},stopReason:"toolUse",timestamp:1};const result=tool("x".repeat(9000),true);const e=event([call,result]);const plan=planCompaction(e);assert.equal(plan.preparation.messagesToSummarize[0],call);assert.equal((plan.preparation.messagesToSummarize[1] as any).toolCallId,"call-1");assert.equal((plan.preparation.messagesToSummarize[1] as any).content[1].type,"image");assert.deepEqual(e.preparation.messagesToSummarize,[call,result]);
+});

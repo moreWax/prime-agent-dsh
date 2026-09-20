@@ -1,59 +1,45 @@
-## Transparent DSH provider wrapping
-
-Installing the package enables transparent DSH routing for each new Prime session. Native provider IDs, model-picker entries, catalogs, and authentication remain unchanged, while the selected provider's normal turns run through an embedded DeepSeek Harness tree. DSH owns the agent loop, model-facing context, tools, skills, memory, subagents, and compaction. Prime provides the UI, model route, approvals, and branch-aware durable checkpoint index. Use `/dsh-session off` only as a session-scoped emergency bypass.
-
-The legacy `dsh` picker entry remains available for compatibility and diagnostics. It is not required for normal use.
-
-The provider is workspace-confined by default. Its embedded DSH tree uses `workspace-write` with approval policy `ask`. DSH 0.1.6-alpha.2 approval requests are bridged to Prime's confirmation UI and grant only the requested action. Non-interactive sessions have no answerer and fail closed. Set `"fullAccess": true` in `~/.prime/agent/dsh.json`, or the exact environment value `PI_DSH_FULL_ACCESS=1`, only when unrestricted host access without prompts is intended.
-
-The Loader boot config is created exclusively as mode `0600` inside an unpredictable, owner-only `0700` temporary directory, then removed after boot. This prevents predictable-name symlink replacement.
-
-The default `pool` mode keeps one persistent DSH session per Prime conversation. Sessions survive host-level Prime session disposal and are reclaimed by idle TTL and LRU limits. Configure it with `~/.prime/agent/dsh.json` (or `$PRIME_AGENT_HOME/dsh.json`) or `PI_DSH_MODE`, `PI_DSH_POOL_MAX`, and `PI_DSH_POOL_IDLE_TTL_MS`. The `oneshot` mode remains a subprocess fallback. The embedded API and its complete `@deepseek-ai/dsh-*` dependency graph are pinned to DeepSeek Harness `0.1.6-alpha.2`.
-
-### Optional MCP and persistent terminal
-
-Pooled agents automatically inherit every **enabled** MCP server declared in Prime's own `~/.prime/agent/settings.json` (`type: "stdio"` becomes `transport: "stdio"`; `type: "http"` becomes `transport: "streamable-http"`), so packages configured for the Prime kernel keep working when a session executes in the embedded DSH loop. Both files are operator-owned, so inheritance does not widen the trust boundary, and inherited entries pass the same strict validation as explicit ones.
-
-Operators can add DSH-only servers or override an inherited entry by `serverName` in `~/.prime/agent/dsh.json`:
-
-```json
-{
-  "persistentTerminal": false,
-  "mcpServers": [
-    { "transport": "stdio", "serverName": "local", "command": "/absolute/path/to/server", "args": [] },
-    { "transport": "streamable-http", "serverName": "remote", "url": "https://example.test/mcp", "headers": { "Authorization": "Bearer operator-secret" } }
-  ]
-}
-```
-
-
-**Resume and branches.** Every completed transparent turn writes a branch-local Prime checkpoint containing the exact durable DSH `turn/end` boundary. Linear turns resume that DSH session. Prime forks create deterministic DSH child sessions from the validated V3 event prefix, so abandoned-branch history cannot leak. If a checkpoint exists but its DSH log is unavailable or invalid, the turn fails visibly instead of silently starting blank. Transcript seeding remains a legacy recovery path only for conversations without a usable checkpoint. Disable that legacy path with `"resumeSeed": false` in `dsh.json` or `PI_DSH_RESUME_SEED=0`.
-
-Persistent terminal is off by default. Explicit and inherited enabled MCP declarations are mounted as configured. Stdio commands and optional working directories must be absolute. HTTP endpoints must use `http` or `https`. Server names must match `[A-Za-z0-9_-]{1,32}` and be unique. Invalid entries are ignored with a warning. Initial MCP connection failure aborts unpublished Agent creation. Servers and the persistent shell are Agent-scoped and are disposed with the pooled Agent. There is no model-facing server-management tool, so only the operator-owned config can select commands, URLs, environment values, or headers. Treat those fields and this file as secrets.
-
-DSH 0.1.6-alpha.2 mounts `web_search` and SSRF-guarded anonymous `web_fetch` in the base bundle. Search resolves `DEEPSEEK_API_KEY` per request through DSH credentials (`$DSH_HOME/.credentials.yaml`, inherited environment, then project/user `.env` fallback) and uses DeepSeek's separate Messages/search endpoint. This package does not copy Prime provider credentials into DSH or accept web credentials in `dsh.json`.
-
 # prime-agent-dsh
 
-A self-contained [Prime Agent package](https://github.com/PrimeIntellect-ai/prime-agent) that runs ordinary Prime sessions through an embedded [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) runtime.
+A self-contained Prime Agent package that uses selected DeepSeek Harness context components without replacing Prime Agent's native model and tool loop.
 
-This is **not** a DeepSeek model-provider plugin. In normal transparent mode DSH runs in-process and routes inference through the model currently selected in Prime. DSH remains responsible for its agent loop, V3 session log, context projection, compaction, tools, skills, subagents, Cordis plugins, and optional memory plugins. The separate explicit-delegation tool uses ACP for compatibility.
+> DeepSeek Harness `0.1.6-alpha.2` is a developer preview. This package pins compatible DSH and Cordis versions exactly.
 
-**One mode: transparent.** Installing this package routes sessions through the
-DeepSeek Harness loop under Prime's UI, using the model Prime has selected.
-DSH is enabled at each session start because it is the product. `/dsh-session off` provides a session-scoped emergency bypass and never changes persistent configuration. Modularity is preserved: no
-global state (kernel modules, other packages' tools) is patched or wrapped,
-packages never depend on this one, and anything optional (durable
-compaction, context shadowing, MCP servers) mounts best-effort and degrades
-cleanly when absent.
+## Architecture
 
-> DeepSeek Harness is currently a developer preview and warns that breaking changes are expected. This package pins the DSH runtime and ACP SDK versions exactly.
+Prime Agent is the sole authority for:
 
-## Install locally
+- model calls and response streaming;
+- tools, IPython, skills, MCP, RLM children, and goals;
+- session JSONL, branching, compaction commits, and lifecycle;
+- model selection, authentication, approvals, and retries.
+
+The package adds a fail-open DSH context sidecar to each Prime `AgentSession`. Every root session and RLM descendant receives an isolated scope. The sidecar derives a rebuildable DSH projection from Prime's active branch and writes immutable, content-addressed snapshots beneath that session's artifact directory. The same automatic lifecycle sync feeds durable query, spill and verified file/image attachment stores, token-pressure and provider-cache series, and Prime's supported compaction seam.
+
+It does **not** run a DSH `AgentLoop`, replace Prime's provider, or create a second conversation authority. No provider wrapper or ACP delegation path ships in the package.
+
+See [`docs/inference-context-plan.md`](docs/inference-context-plan.md) for the design rules and rollout plan.
+
+## Features
+
+- Per-root and per-RLM-child context isolation.
+- Append/no-op/rebuild projection tracking.
+- Immutable snapshots tied to the exact Prime branch leaf and revision.
+- Bounded transcript search, message reads, and private artifacts through Python.
+- Provider-reported input/output/cache token metrics.
+- Explicit durable context admission through recorded IPython results.
+- Automatic bounded parent-to-child evidence capsules through stock Prime lifecycle hooks.
+- Expiring, bounded parent-to-child context grants for explicit larger selections.
+- Optional shadow telemetry that never mutates provider context.
+- Optional Prime-committed compaction planning.
+
+Prime JSONL remains canonical. Snapshots and indexes are derived and can be rebuilt.
+
+## Install
 
 ```bash
 cd prime-agent-dsh
 npm install
+npm run release:check
 prime-agent package install "$PWD"
 ```
 
@@ -63,158 +49,137 @@ For project-local activation:
 prime-agent package install --local "$PWD"
 ```
 
-Restart Prime Agent after installation. During development, use:
+Automatic RLM inheritance uses stock Prime 0.9.5 lifecycle hooks. It pins the stable parent file at child `session_start`, admits task-ranked evidence at the first `before_agent_start`, and orders it request-locally in `context`. No Prime patch, provider call, or tool fallback is used.
+
+Restart Prime Agent after installation. During development:
 
 ```bash
 prime-agent -e ./extensions/index.ts
 ```
 
-## Use
+## Commands
 
-Ask Prime Agent to delegate a task to DeepSeek Harness, or explicitly use the tool:
+- `/dsh-session status` — show the current isolated scope, revision, and cache metrics.
+- `/dsh-session on` — enable context snapshotting for this Prime session.
+- `/dsh-session off` — disable context snapshotting for this Prime session. Prime inference is unaffected.
+- `/dsh-session capabilities` — summarize available sidecar features.
+- `/dsh-session doctor` — verify the current session's artifact binding.
+- `/dsh-context-status` — show optional shadow-mirror health.
+- `/dsh-context-trace [count|clear]` — inspect content-free prefix telemetry.
 
-- Tool: `deepseek_harness`
-- **`/dsh-session on|off|status`** — enable or disable DSH for the current session only
-  (defaults on; resets at each session start; never persisted).
-- Explicit task: `/dsh-session run <task>`
-- Status: `/dsh-session status`
-- Full route check: `/dsh-session doctor`
-- Capabilities: `/dsh-session capabilities`
-- Inference-context shadow health: `/dsh-context-status`
-- Last content-free prefix trace: `/dsh-context-trace`
+## Python context objects
 
-The tool returns a DSH session ID. On the same Prime branch, later calls automatically continue the latest DSH session; callers may also pass the ID explicitly. Forking before a DSH result mints a separate DSH session.
+The shipped `dsh-context` skill installs the `dsh_context` module into every Prime kernel, including RLM child kernels.
 
-## Transparent inference-context integration
+```python
+ctx = dsh_context.current()
+ctx.entries(last=10)
+ctx.messages(last=10)
+ctx.search("authentication", limit=20)
+ctx.metrics
+```
 
-Transparent provider wrapping is enabled at each session start. Ordinary provider IDs and model-picker entries remain unchanged, while DSH owns the model-facing loop, context, tools, skills, sessions, and compaction. Prime `/refine` and automatic refinement review are auxiliary one-shot requests and bypass the persistent DSH conversation, preventing refinement JSON from contaminating user context. Optional projection telemetry remains shadow-only and does not mutate requests.
+Pin the current immutable view or create a private content-addressed artifact:
 
-The detailed shadow-first implementation and rollout plan is in [`docs/inference-context-plan.md`](docs/inference-context-plan.md). Context projection and pruning will only enter the provider path after differential tests prove Prime behavioral parity and fail-open recovery.
+```python
+snapshot = ctx.snapshot()
+artifact = ctx.artifact(ctx.search("migration decision"), label="Migration evidence")
+```
 
-## Upgrade from v0.0.1
+### Durable admission
 
-v0.0.2 replaces the narrow DSH SDK transport with ACP. Old caller-minted `prime-…` session identifiers are migrated to a fresh ACP session on first use; their old SDK history is not imported. New ACP-assigned IDs resume normally.
+Reading a snapshot does not silently alter model context. To admit selected material, print or return the bounded value from IPython:
 
-## Configuration
+```python
+selection = ctx.search("migration decision", limit=8)
+print(ctx.inject(selection, label="Relevant migration decisions"))
+```
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `PRIME_DSH_PROFILE` | `acp` | Compatibility setting; the Prime bridge currently enforces the ACP profile |
-| `PRIME_DSH_HOME` | `~/.prime/agent/deepseek-harness` | Isolated DSH home and persistence |
-| `PRIME_DSH_PATCHES` | empty | Comma/semicolon-separated Cordis patch paths |
-| `PRIME_DSH_BIN` | package-pinned DSH CLI | Optional explicit compatible `dsh` executable |
-| `PRIME_DSH_INITIALIZE_TIMEOUT_MS` | `15000` | Initialize handshake timeout |
-| `PRIME_DSH_PROJECTION_MODE` | `shadow` | Projection promotion gate: `shadow`, `canary`, or `active` |
+Prime records that tool result in its canonical session before a later model request can use it. Prime 0.9.5 does not expose a public extension hook for custom Python host requests, so the package does not write Prime JSONL directly.
 
-The equivalent CLI flags `--dsh-bin` and `--dsh-home` override those two paths.
+### Native RLM inheritance and explicit grants
 
-Model selection and authentication remain Prime Agent concerns. Users normally select ordinary Prime models in `/model`; the compatibility-only `dsh/dsh-harness` picker entry remains available for diagnostics and is not required for transparent routing. At session start it replaces each native provider with an identity-preserving decorator. The decorator keeps the provider ID, model catalog, authentication, refresh policy, and deferred operations, but routes normal streams through the persistent DSH pool. The already-resolved request credential and endpoint become a loopback capability route, so DSH never receives or persists the upstream credential. Model changes create a distinct runtime route while preserving the same logical, checkpointed DSH conversation. The old writer is flushed and disposed before the new route resumes it.
+For an apparent native `rlm.spawn` descendant, the extension freezes the stable parent branch observed at child `session_start`. This is an observed cut, not Prime's inaccessible host-captured spawn leaf. It merges eligible local user/assistant/summary records with the immediate parent's validated capsule. It writes an atomic private admission under the child artifact directory. It then returns exactly one hidden, unprivileged `prime-agent-dsh/inherited-context-v1` message. The request-local `context` hook places that evidence immediately before the child task; DSH admission is durable before inference, while Prime custom-message persistence remains eventual. The child validates the local admission, payload, and canonical message automatically. This works at arbitrary depth. Root sessions are unchanged.
 
-The current release supports Prime models whose wire API is `openai-completions`, `openai-responses`, or `anthropic-messages`, matching DSH's public `llm-pi-ai` adapter. Unsupported provider-specific protocols fail explicitly rather than silently changing request semantics.
+Capsules are bounded, quote evidence as untrusted data, and never contain system/developer text, tool inputs/results, credentials, provider state, or synthetic inherited messages. Prime remains authoritative for lineage, messages, tools, and inference.
 
-### Projection promotion gate (developer preview)
+A parent can also share a larger explicit bounded selection without copying its live session or authority:
 
-The model-wrapper proof of concept has a strict promotion gate. It converts the
-complete Prime message list to DSH, projects it back, rebuilds the full provider
-context, and selects that candidate only when it has exact deep structural parity
-with the original context. Any sync, projection, validation, conversion, or parity
-failure returns the original `Context` object unchanged.
+```python
+selection = ctx.search("authentication design", limit=12)
+grant = ctx.grant(selection, label="Authentication evidence")
+child = await rlm.spawn(
+    "Review the design. " + grant.instruction,
+    name="auth-review",
+)
+```
 
-`PRIME_DSH_PROJECTION_MODE` defaults to `shadow`. `canary` additionally requires
-an explicit per-branch canary selector supplied by the embedding controller; with
-no selector it stays fail-open on native Prime context. `active` authorizes selection
-only after the same parity gate. None of these modes changes model auth or dispatch.
+The descendant opens the explicit capability:
 
-## DSH → Prime installation
+```python
+evidence = dsh_context.open_grant("dsh-context-grant:...")
+evidence.value
+```
 
-The `dsh/` directory is a separately installable DSH bundle. For local development, install its dependencies first, then add it to a base-backed DSH application profile:
+Grants are token-addressed, read-only, size-limited, and expiring. A child always gets its own session snapshot. The automatic capsule is tightly bounded; larger parent selections require an explicit grant.
+
+## Optional configuration
+
+| Variable or flag | Default | Purpose |
+|---|---:|---|
+| `PRIME_DSH_SHADOW_MODE` | `off` | Set to `on` for a second, diagnostic-only round-trip mirror. |
+| `PRIME_DSH_SHADOW_MAX_MESSAGES` | `500` | Bound shadow work by message count. |
+| `PRIME_DSH_SHADOW_MAX_BYTES` | `4194304` | Bound shadow work by serialized bytes. |
+| `PRIME_DSH_COMPACTION_MODE` | `active` | Compaction planner mode: `off`, `shadow`, or `active`. |
+| `--dsh-compaction` | environment value | Per-process override for compaction mode. |
+| `PRIME_DSH_PRUNE_THRESHOLD_CHARS` | `8192` | Tool-result pruning threshold for planned compaction. |
+| `PRIME_DSH_PRUNE_HEAD_CHARS` | `4096` | Tool-result prefix retained by the planner. |
+| `PRIME_DSH_PRUNE_TAIL_CHARS` | `1024` | Tool-result suffix retained by the planner. |
+
+Active compaction uses Prime's supported `before_compact` lifecycle and returns a normal Prime `CompactionResult`. It does not edit session files directly.
+
+## Storage and safety
+
+Context objects are stored under the matching Prime session artifact directory:
+
+```text
+session-artifacts/<session>/dsh-context/
+  BINDING
+  CURRENT
+  manifest.json                 # generated compatibility pointer only
+  objects/<sha256>.json         # immutable derived objects
+  commits/<sha256>.json         # immutable generation commits
+  heads/<generation>-<sha256>   # recovery authority
+  artifacts/<sha256>.md
+  grants/<capability-token>.json
+../dsh-inheritance/
+  HEAD                          # atomic PINNED/ADMITTED generation pointer
+  generations/<state>-<sha256>/ # immutable pin/payload/admission set
+```
+
+Prime JSONL is the sole canonical history. Each lifecycle sync publishes a transactional, content-addressed generation. Recovery scans immutable heads and validates commits and objects; `CURRENT` and `manifest.json` are replaceable hints/views. A corrupt or interrupted publication therefore falls back to the newest valid generation. Append mode is used only after exact source and effective prefix proof; compaction, forks, and rewrites rebuild.
+
+Directories use mode `0700`; files use mode `0600`. Object paths and digests are verified. Reads, search results, injected values, artifacts, and grants have hard size limits. Projection errors fail open and leave Prime's request unchanged.
+
+These checks prevent accidental traversal, corruption, stale references, and unsafe cross-session reuse. They are not a hostile same-UID sandbox. Another process running as the same OS user can generally read or replace that user's files between checks. Native parent/child sessions are therefore treated as a cooperative lineage; use separate OS identities or a sandbox for mutually hostile agents.
+
+## Validation
 
 ```bash
-npm --prefix ./dsh install
-dsh plugin --profile web add "$PWD/dsh"
+npm run typecheck
+npm run lint
+npm test
+npm run test:python
+npm run package:smoke
+npm run release:check
 ```
 
-This adds the DSH model-facing tool `prime_subagent`. It uses the maintained `@deepseek-ai/dsh-subagent-acp` provider and runs isolated `prime-agent --mode acp --no-session` children. This baseline reverse path is intentionally one-shot and defaults to rejected permission prompts.
+The tests cover conversion, append/rebuild behavior, branch snapshots, root/child isolation, fail-open errors, Python search and admission, artifact permissions, child grants, tamper detection, packaging, clean production installation, extension discovery, and reload.
 
-The DSH bundle is not loaded by Prime's `pi` manifest; it is installed independently using DSH's native package manager.
+## Current boundary
 
-## Context and memory boundary
-
-Prime and DSH intentionally keep separate histories:
-
-1. Prime calls the bridge with a self-contained task.
-2. The ACP client queues that task into a DSH session.
-3. DSH logs it durably and derives future model context from its own event stream.
-4. Follow-ups reuse the DSH session ID.
-5. Prime receives the committed final response and bounded progress summaries.
-
-The bridge does **not** replay Prime's complete transcript into DSH. Doing that would duplicate context and undermine DSH's invariant that model-visible inputs are reconstructable from its session log.
-
-Memory behavior depends on the selected DSH profile and installed DSH plugins. The bridge preserves those features; it does not pretend every optional memory plugin is installed.
-
-## Capability evidence
-
-Run `/dsh-capabilities` to see an evidence-backed inventory. `loaded` means the pinned `dsh-base` composition mounts the service; it does not mean the integration path has been exercised. `verified` requires bridge or live-test evidence. Current verified bridge paths include raster images (PNG, JPEG, WebP, GIF), structured user questions and plan review, while optional MCP and persistent PTY terminals are not part of the stock embedded base composition. Subagents, workflows, and jobs are verified by `npm run test:live` against the actual embedded DSH tree and a deterministic local OpenAI-compatible model. The probe starts one foreground child, runs a one-child worker workflow, and starts then collects one background child job. Goals, compaction, and projection cache remain only composition-verified. Web fetch/search is credential-dependent. The capability report is deliberately conservative and does not treat an installed package as loaded.
-
-### Embedded lifecycle and limits
-
-Embedded DSH keeps the upstream ownership rules: foreground subagent calls settle before their tool result, workflow runs are disposed after settlement, and jobs stay process-local and owner-scoped until collected, cancelled, or the tree is disposed. The bridge overlays conservative bounds on the stock base profile: subagent recursion depth `2`; workflow concurrency `4`, total children `16`, items per combinator `64`, synchronous-script timeout `2s`, and disposal grace `2s`; job waits default to `5s` and clamp at `30s`. Job completion delivery is `quiet`, which avoids model-driven wake loops. These are per-tree safety bounds, not durable queues or security isolation. Worker workflows remain a containment boundary, not a sandbox, and jobs/workflows do not resume after process loss.
-
-## Security and limitations
-
-- DSH is a nested code-executing agent. Its full base-backed ACP profile currently defaults to workspace-write, but Cordis patches and third-party plugins are trusted code and can change the security boundary.
-- DSH permission requests are mapped to Prime's UI and fail closed when no UI is available.
-- Patch paths are operator configuration only; the model-facing tool cannot choose arbitrary patches, profiles, binaries, environment variables, or working directories.
-- ACP cancellation is forwarded through `session/cancel`. The subprocess is closed only during bridge shutdown or if the transport fails.
-- One ACP subprocess is reused per workspace/configuration. Calls on it are serialized.
-- ACP `session/prompt` settles after the DSH agent reaches its defined terminal boundary; calls are serialized conservatively by the bridge.
-- `stdout` belongs exclusively to ACP JSON-RPC. Never install a DSH plugin that writes arbitrary output to stdout in the ACP profile.
-
-## Durable compaction planner (preview)
-
-The Prime extension can shadow or activate a DSH-style compaction plan at Prime's
-`session_before_compact` hook. This is deliberately the **only** mutation seam:
-the normal `context` and provider-request observers remain passive. The planner
-keeps Prime's already balanced cut/retained tail, then applies DSH's deterministic
-Unicode-code-point head/marker/tail rule to oversized text tool results in the
-summarized region. Images and other rich blocks retain their relative order.
-
-The default is `off`. Opt in to diagnostics without changing durable history:
-
-```sh
-PRIME_DSH_COMPACTION_MODE=shadow prime-agent
-# or: prime-agent --dsh-compaction shadow
-```
-
-Use `active` only to authorize the validated plan. Prime's selected model, auth,
-cancellation signal, instructions, and durable `CompactionResult` commit path are
-still authoritative; planner or compactor errors fail open to native compaction.
-Budgets default to 8192/4096/1024 characters and can be overridden with
-`PRIME_DSH_PRUNE_THRESHOLD_CHARS`, `PRIME_DSH_PRUNE_HEAD_CHARS`, and
-`PRIME_DSH_PRUNE_TAIL_CHARS`.
-
-## Development
-
-```bash
-npm install
-npm run check
-```
-
-Relevant upstream interfaces:
-
-- `packages/acp/acp/README.md`
-- `packages/bundle/acp-app/README.md`
-- `packages/subagent/subagent-acp/README.md`
-- `docs/architecture.md`
+This redesign intentionally does not expose DSH's full agent loop, tools, subagent tree, or independent persistence as part of normal Prime turns. Those features would create a second loop and context authority. Only loop-independent DSH context capabilities belong in this package unless Prime adds a supported middleware interface that preserves its lifecycle invariants.
 
 ## License
 
-MIT. DeepSeek Harness and its transitive dependencies retain their own licenses and notices.
-
-## Upstream prior art
-
-The pooled DSH provider implementation is adapted from [fatwang2/pi-dsh](https://github.com/fatwang2/pi-dsh) under the MIT License. See `THIRD_PARTY_NOTICES.md`.
-
-## Live provider validation
-
-The pooled provider has been validated against Prime Agent 0.9.1 and DSH 0.1.6-alpha.2. Selecting any supported native Prime model transparently routes its inference through DSH while DSH owns the agent loop and context. A live test streamed reasoning/text, used DSH's own `read` tool without emitting a Prime tool call, and recalled the tool result on the next turn from the same DSH session.
+MIT. See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for bundled dependency notices.

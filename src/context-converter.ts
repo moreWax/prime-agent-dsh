@@ -26,6 +26,34 @@ export interface AsyncConverterCapabilities {
 type PrimeMeta = { role: string; envelope?: Omit<PrimeEnvelope, "message">; fields: Record<string, unknown> };
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const string = (v: unknown, what: string): string => { if (typeof v !== "string") throw new TypeError(`${what} must be a string`); return v; };
+
+/** Detach metadata into the lossless-JSON subset required by DSH session events. */
+function jsonBoundary(value: unknown, ancestors = new Set<object>()): unknown {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number") return Number.isFinite(value) ? (Object.is(value, -0) ? 0 : value) : null;
+  if (typeof value === "bigint") return value.toString();
+  if (typeof value !== "object" || ancestors.has(value)) return undefined;
+  if (Array.isArray(value)) {
+    ancestors.add(value);
+    const result = Array.from({ length: value.length }, (_, index) => jsonBoundary(value[index], ancestors) ?? null);
+    ancestors.delete(value);
+    return result;
+  }
+  const prototype = Reflect.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return undefined;
+  ancestors.add(value);
+  const result: Record<string, unknown> = {};
+  for (const key of Object.keys(value)) {
+    let item: unknown;
+    try { item = jsonBoundary((value as Record<string, unknown>)[key], ancestors); } catch { continue; }
+    if (item !== undefined) result[key] = item;
+  }
+  ancestors.delete(value);
+  return result;
+}
+function jsonRecord(value: Record<string, unknown>): Record<string, unknown> {
+  return jsonBoundary(value) as Record<string, unknown>;
+}
 function parts(content: unknown): Record<string, unknown>[] {
   if (typeof content === "string") return [{ type: "text", text: content }];
   if (!Array.isArray(content)) throw new TypeError("message content must be a string or array");
@@ -39,7 +67,7 @@ function toDshBlocks(content: unknown, caps: ConverterCapabilities, assistant: b
       case "toolCall": {
         if (!assistant) throw new TypeError("toolCall is only valid in assistant content");
         const args = p.arguments;
-        return { type: "tool-call", id: ToolCallId(string(p.id, "toolCall.id")), name: string(p.name, "toolCall.name"), arguments: typeof args === "string" ? args : JSON.stringify(args ?? {}) };
+        return { type: "tool-call", id: ToolCallId(string(p.id, "toolCall.id")), name: string(p.name, "toolCall.name"), arguments: typeof args === "string" ? args : JSON.stringify(jsonBoundary(args ?? {}) ?? {}) };
       }
       case "image": {
         if (!caps.admitImage) throw new ConversionCapabilityError("prime-image-admission", "inline Prime images require an attachment admission capability", { mimeType: p.mimeType });
@@ -56,11 +84,13 @@ function split(input: PrimeMessage | PrimeEnvelope): { message: PrimeMessage; en
 /** Lossless Prime -> DSH projection. Prime-only fields ride source.prime for the reverse projection. */
 export function primeToDsh(input: PrimeMessage | PrimeEnvelope, caps: ConverterCapabilities = {}, idOverride?: string): Message {
   const { message: p, envelope } = split(input); const role = string(p.role, "role");
-  const fields: Record<string, unknown> = {}; for (const [k, v] of Object.entries(p)) if (k !== "role" && k !== "content") fields[k] = v;
-  const meta: PrimeMeta = { role, ...(envelope ? { envelope } : {}), fields };
+  const rawFields: Record<string, unknown> = {}; for (const [k, v] of Object.entries(p)) if (k !== "role" && k !== "content") rawFields[k] = v;
+  const fields = jsonRecord(rawFields);
+  const safeEnvelope = envelope ? jsonRecord(envelope) as Omit<PrimeEnvelope, "message"> : undefined;
+  const meta: PrimeMeta = { role, ...(safeEnvelope ? { envelope: safeEnvelope } : {}), fields };
   let content: ContentBlock[]; let dshRole: "user" | "assistant"; let source: Message["source"] & { prime: PrimeMeta };
   if (role === "user") { content = toDshBlocks(p.content, caps, false); dshRole = "user"; source = { kind: "user", prime: meta }; }
-  else if (role === "assistant") { content = toDshBlocks(p.content, caps, true); dshRole = "assistant"; source = { kind: "model", provider: typeof p.provider === "string" ? p.provider : "external", model: typeof p.model === "string" ? p.model : "unknown", ...(p.replayState === undefined ? {} : { replayState: p.replayState }), prime: meta }; }
+  else if (role === "assistant") { const replayState = jsonBoundary(p.replayState); content = toDshBlocks(p.content, caps, true); dshRole = "assistant"; source = { kind: "model", provider: typeof p.provider === "string" ? p.provider : "external", model: typeof p.model === "string" ? p.model : "unknown", ...(replayState === undefined ? {} : { replayState }), prime: meta }; }
   else if (role === "toolResult") {
     const callId = ToolCallId(string(p.toolCallId, "toolCallId"));
     content = [{ type: "tool-result", toolCallId: callId, content: toDshBlocks(p.content, caps, false), isError: p.isError === true }]; dshRole = "user"; source = { kind: "tool", callId, prime: meta };
