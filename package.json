@@ -40,6 +40,7 @@
     "scripts/patch-pi-ai-partial-json.mjs",
     "docs/context-spill.md",
     "docs/durable-context-query.md",
+    "docs/single-window-cache-architecture.md",
     "scripts/package-smoke.mjs",
     "README.md",
     "LICENSE",

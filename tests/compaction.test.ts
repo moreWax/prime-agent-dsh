@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { SessionBeforeCompactEvent } from "@earendil-works/pi-coding-agent";
-import { DSH_PRUNE_MARKER, DurableCompactionController, planCompaction, pruneToolResults, resolvePrunePolicy } from "../src/compaction.js";
+import { DSH_PRUNE_MARKER, DurableCompactionController, loadCompactionPlannerConfig, planCompaction, pruneToolResults, resolvePrunePolicy } from "../src/compaction.js";
 
 function tool(text: string, rich = false) {
   return { role: "toolResult" as const, toolCallId: "call-1", toolName: "read", content: [
@@ -14,6 +14,13 @@ function event(messages: any[]): SessionBeforeCompactEvent {
     settings: { enabled: true, reserveTokens: 10, keepRecentTokens: 20 } }, branchEntries: [], reason: "threshold",
     willRetry: false, signal: new AbortController().signal } as unknown as SessionBeforeCompactEvent;
 }
+
+
+test("compaction defaults to cache-safe shadow mode", () => {
+  assert.equal(loadCompactionPlannerConfig(undefined).mode, "shadow");
+  assert.equal(loadCompactionPlannerConfig("active").mode, "active");
+  assert.equal(loadCompactionPlannerConfig("off").mode, "off");
+});
 
 test("prune budgets must fit the stable DSH marker", () => {
   assert.throws(() => resolvePrunePolicy({ thresholdChars: 10, headChars: 2, tailChars: 2 }), /marker/);

@@ -110,7 +110,10 @@ export function pruneToolResults(inputMessages: readonly AgentMessage[], policyI
 
 
 export function loadCompactionPlannerConfig(modeValue = process.env.PRIME_DSH_COMPACTION_MODE): CompactionPlannerConfig {
-  const mode = modeValue?.trim() || "active";
+  // Prime's stock compactor reshapes the summary request and disables cache retention.
+  // Stay observational by default until the integrated compactor can replay the
+  // exact warm request prefix like DSH compaction-basic.
+  const mode = modeValue?.trim() || "shadow";
   if (mode !== "off" && mode !== "shadow" && mode !== "active") throw new TypeError("PRIME_DSH_COMPACTION_MODE must be off, shadow, or active");
   const envInteger = (name: string, fallback: number): number => {
     const raw = process.env[name];

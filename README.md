@@ -17,7 +17,7 @@ The package adds a fail-open DSH context sidecar to each Prime `AgentSession`. E
 
 It does **not** run a DSH `AgentLoop`, replace Prime's provider, or create a second conversation authority. No provider wrapper or ACP delegation path ships in the package.
 
-See [`docs/inference-context-plan.md`](docs/inference-context-plan.md) for the design rules and rollout plan.
+See [`docs/inference-context-plan.md`](docs/inference-context-plan.md) for the broader rollout plan and [`docs/single-window-cache-architecture.md`](docs/single-window-cache-architecture.md) for the one-window, append-only, cache-epoch contract.
 
 ## Features
 
@@ -130,13 +130,13 @@ Grants are token-addressed, read-only, size-limited, and expiring. A child alway
 | `PRIME_DSH_SHADOW_MODE` | `off` | Set to `on` for a second, diagnostic-only round-trip mirror. |
 | `PRIME_DSH_SHADOW_MAX_MESSAGES` | `500` | Bound shadow work by message count. |
 | `PRIME_DSH_SHADOW_MAX_BYTES` | `4194304` | Bound shadow work by serialized bytes. |
-| `PRIME_DSH_COMPACTION_MODE` | `active` | Compaction planner mode: `off`, `shadow`, or `active`. |
+| `PRIME_DSH_COMPACTION_MODE` | `shadow` | Compaction planner mode: `off`, `shadow`, or explicit opt-in `active`. |
 | `--dsh-compaction` | environment value | Per-process override for compaction mode. |
 | `PRIME_DSH_PRUNE_THRESHOLD_CHARS` | `8192` | Tool-result pruning threshold for planned compaction. |
 | `PRIME_DSH_PRUNE_HEAD_CHARS` | `4096` | Tool-result prefix retained by the planner. |
 | `PRIME_DSH_PRUNE_TAIL_CHARS` | `1024` | Tool-result suffix retained by the planner. |
 
-Active compaction uses Prime's supported `before_compact` lifecycle and returns a normal Prime `CompactionResult`. It does not edit session files directly.
+Shadow compaction observes Prime's supported `session_before_compact` lifecycle without changing the request. The current `active` mode is explicit opt-in because it delegates summarization to Prime's stock compactor, whose cache-disabled transcript-shaped request cannot reuse DSH's warm-prefix strategy. It still returns a normal Prime `CompactionResult` and never edits session files directly.
 
 ## Storage and safety
 

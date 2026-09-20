@@ -10,7 +10,7 @@ const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 const originalHome = process.env.HOME ?? process.env.USERPROFILE;
 const expected = [
   "LICENSE", "README.md", "THIRD_PARTY_NOTICES.md", "package.json",
-  "docs/context-spill.md", "docs/durable-context-query.md", "docs/inference-context-plan.md", "docs/shadow-telemetry-validation.md",
+  "docs/context-spill.md", "docs/durable-context-query.md", "docs/inference-context-plan.md", "docs/shadow-telemetry-validation.md", "docs/single-window-cache-architecture.md",
   "extensions/index.ts", "extensions/shadow-context.ts", "scripts/package-smoke.mjs", "scripts/patch-pi-ai-partial-json.mjs",
   "skills/dsh-context/SKILL.md", "skills/dsh-context/pyproject.toml", "skills/dsh-context/src/dsh_context/__init__.py",
   "src/compaction.ts", "src/context-converter.ts", "src/context-objects.ts", "src/context-pressure.ts", "src/context-protocol.ts", "src/context-spill.ts",
