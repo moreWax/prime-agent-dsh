@@ -198,7 +198,7 @@ test("v3 recovery fails closed on a tampered located Prime entry", async () => {
 
 
 test("old derived schemas reset only cache-owned state and rebuild from Prime", async (t) => {
-  for (const legacy of ["binding", "object"] as const) await t.test(legacy, async () => {
+  for (const legacy of ["binding", "object", "snapshot"] as const) await t.test(legacy, async () => {
     const temporary = await mkdtemp(join(tmpdir(), "durable-reset-"));
     const session = join(temporary, "prime.jsonl");
     const source = [{ id: "m1", message: { role: "user", content: "from Prime" } }];
@@ -212,10 +212,14 @@ test("old derived schemas reset only cache-owned state and rebuild from Prime", 
       const value = JSON.parse(await readFile(objectPath, "utf8"));
       value.version = "prime-agent-dsh/derived-object-v2";
       await writeFile(objectPath, JSON.stringify(value), "utf8");
-    } else {
+    } else if (legacy === "binding") {
       await mkdir(join(root, "heads"), { recursive: true });
       await mkdir(join(root, "commits")); await mkdir(join(root, "objects")); await mkdir(join(root, "bodies"));
       await writeFile(join(root, "BINDING"), JSON.stringify({ version: "prime-agent-dsh/durable-store-v1" }));
+    } else {
+      await mkdir(join(root, "snapshots"), { recursive: true });
+      await writeFile(join(root, "snapshots", "legacy.json"), JSON.stringify({ messages: source }));
+      await writeFile(join(root, "manifest.json"), JSON.stringify({ version: "prime-agent-dsh/context-object-v1", snapshot: "snapshots/legacy.json" }));
     }
     await mkdir(join(root, "artifacts"), { recursive: true }); await mkdir(join(root, "grants"), { recursive: true });
     await writeFile(join(root, "artifacts", "user.md"), "keep artifact");

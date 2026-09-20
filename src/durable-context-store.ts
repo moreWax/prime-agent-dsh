@@ -274,6 +274,10 @@ export class DurableContextStore {
   /** Unsupported derived schemas are disposable caches. User artifacts and grants are never touched. */
   private needsSchemaReset(): boolean {
     const bindingPath = join(this.root, "BINDING");
+    // Pre-store context objects used snapshots/ + manifest.json without a
+    // BINDING. V2 used bodies/. Both are disposable derived caches.
+    if (existsSync(join(this.root, "snapshots")) || existsSync(join(this.root, "bodies"))) return true;
+    if (!existsSync(bindingPath) && existsSync(join(this.root, "manifest.json"))) return true;
     if (existsSync(bindingPath)) {
       try {
         const binding = object(parseJson(bindingPath));
