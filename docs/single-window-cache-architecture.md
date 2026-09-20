@@ -64,16 +64,19 @@ The mode still defaults to `shadow`. Prime 0.9.5 exposes the provider `completeS
 
 ## Durable append-only target
 
-Derived-object v2 stores exact source and effective entries as immutable content-addressed bodies. Small immutable root objects contain ordered body digests, compatibility metadata, and append/rebuild provenance. New generations deduplicate unchanged bodies instead of copying the cumulative transcript, while v1 roots remain readable.
+Derived-object v3 is reference-only. Each ordered source entry records its Prime
+entry ID when present, byte offset, byte length, line number, and canonical SHA-256
+digest into the bound Prime JSONL. The root may also retain entry hashes, roles,
+tool-pair metadata, and bounded search-token indexes. It contains no source body,
+effective body, or compatibility preview text. Effective views are reconstructed
+from verified source records when that is lossless; otherwise readers report them
+as unavailable.
 
-The remaining durability work is to:
-
-- unify head/object/body validation across TypeScript recovery, query, and Python readers;
-- derive spill reachability from every valid head;
-- retain explicit durability barriers after committed assistant messages, before compaction, and at shutdown;
-- strengthen branch-specific ancestry lookup beyond bounded recovery scans.
-
-Prime JSONL remains canonical. DSH v2 can reconstruct its exact observed source/effective cut, but it does not supersede Prime session recovery or own the model loop.
+Prime JSONL is the only full-content authority. Locator reads verify bounds, ID,
+canonical digest, and the aggregate source digest before returning content. A
+changed or replaced source record fails closed. The next lifecycle sync may rebuild
+a new generation from the then-current authoritative JSONL. Legacy v1 and v2 roots
+remain readable for backward compatibility, but all new publications use v3.
 
 ## Cache measurement
 

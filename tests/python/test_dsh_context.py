@@ -145,6 +145,49 @@ class DshContextTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "digest mismatch"):
             dsh_context.current().snapshot()
 
+    def test_v3_dereferences_prime_jsonl_without_persisting_body_text(self):
+        objects = self.root / "objects"
+        objects.mkdir(exist_ok=True)
+        prime = Path(self.temp.name) / "prime.jsonl"
+        secret = "prime-only-secret-4c19"
+        source = [{"type": "message", "id": "u-v3", "message": {"role": "user", "content": secret}}]
+        line = json.dumps(source[0], ensure_ascii=False, separators=(",", ":")).encode()
+        prime.write_bytes(line + b"\n")
+        canonical_entry = json.dumps(source[0], ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
+        entry_digest = hashlib.sha256(canonical_entry).hexdigest()
+        source_digest = hashlib.sha256(b"[" + canonical_entry + b"]").hexdigest()
+        compatibility = {
+            "version": "prime-agent-dsh/durable-store-v1", "sessionId": "root-session",
+            "branchId": "u-v3", "revision": 4, "messageCount": 1, "entries": [],
+            "cropped": False, "sourceDigest": source_digest, "effectiveDigest": entry_digest,
+            "converterVersion": "c", "schemaVersion": "prime-agent-dsh/context-object-v1",
+        }
+        stored = {
+            "version": "prime-agent-dsh/derived-object-v3-reference", "bindingDigest": "0" * 64,
+            "sourceDigest": source_digest, "effectiveDigest": entry_digest,
+            "sourceEntryDigests": [entry_digest], "effectiveEntryDigests": [entry_digest],
+            "sourceLocators": [{"index": 0, "byteOffset": 0, "byteLength": len(line), "line": 1,
+                                "entryDigest": entry_digest, "entryId": "u-v3"}],
+            "effectiveReferences": [{"entryDigest": entry_digest, "sourceIndex": 0, "role": "user"}],
+            "compatibility": compatibility,
+        }
+        raw = json.dumps(stored, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
+        digest = hashlib.sha256(raw).hexdigest()
+        (objects / f"{digest}.json").write_bytes(raw + b"\n")
+        (self.root / "BINDING").write_text(json.dumps({"version": "prime-agent-dsh/durable-store-v1",
+                                                        "sessionId": "root-session", "primeSessionFile": str(prime),
+                                                        "bindingDigest": "0" * 64}))
+        manifest = {"version": "prime-agent-dsh/context-object-v1", "sessionId": "root-session",
+                    "branchId": "u-v3", "revision": 4, "digest": digest, "snapshot": f"objects/{digest}.json"}
+        (self.root / "manifest.json").write_text(json.dumps(manifest))
+        snapshot = dsh_context.current().snapshot()
+        self.assertEqual(snapshot.search(secret)[0].text, secret)
+        self.assertEqual(snapshot.messages()[0].text, secret)
+        self.assertNotIn(secret, (objects / f"{digest}.json").read_text())
+        prime.write_bytes(line.replace(b"prime-only", b"evilx-only") + b"\n")
+        with self.assertRaisesRegex(RuntimeError, "digest mismatch"):
+            dsh_context.current().snapshot()
+
 
 if __name__ == "__main__":
     unittest.main()

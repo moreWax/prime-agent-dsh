@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, realpath, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -11,7 +11,10 @@ async function fixture() {
   const session = join(temporary, "prime.jsonl"); await writeFile(session, "", "utf8");
   const root = join(temporary, "store");
   const store = new DurableContextStore({ root, binding: { sessionId: "only-this", primeSessionFile: session } });
-  const publish = (source: unknown[], branchId: string) => store.publish({ source, effective: source, branchId, converterVersion: "c1", schemaVersion: "s1", observedAt: 10 });
+  const publish = async (source: unknown[], branchId: string) => {
+    await appendFile(session, source.map(value => JSON.stringify(value)).join("\n") + "\n");
+    return store.publish({ source, effective: source, branchId, converterVersion: "c1", schemaVersion: "s1", observedAt: 10 });
+  };
   return { temporary, session, root, store, publish };
 }
 

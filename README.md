@@ -32,7 +32,7 @@ See [`docs/inference-context-plan.md`](docs/inference-context-plan.md) for the b
 - Optional shadow telemetry that never mutates provider context.
 - Optional Prime-committed compaction planning.
 
-Prime JSONL remains canonical. Snapshots and indexes are derived and can be rebuilt.
+Prime JSONL is the only full-content authority. New durable context roots contain verified byte/line locators, IDs, and digests only; they never copy source or effective message bodies. Derived indexes are bounded and rebuildable.
 
 ## Install
 

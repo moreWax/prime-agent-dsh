@@ -8,8 +8,6 @@ import test from "node:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ContextObjectStore, contextObjectRoot } from "../src/context-objects.js";
 import { DurableContextQuery } from "../src/durable-context-query.js";
-import { DurableFileAttachments } from "../src/durable-file-attachments.js";
-import { resolveContextSpill } from "../src/context-spill.js";
 
 function primeContext(sessionId: string, sessionFile: string, branch: unknown[], leaf: () => string): ExtensionContext {
   const value = {
@@ -39,6 +37,7 @@ test("context objects mirror Prime without changing its messages", async () => {
       usage: { input: 10, output: 2, cacheRead: 7, cacheWrite: 3, totalTokens: 12 },
     } },
   ];
+  await writeFile(sessionFile, branch.map(value => JSON.stringify(value)).join("\n") + "\n");
   const ctx = primeContext(sessionId, sessionFile, branch, () => leaf);
   const messages: unknown[] = [
     { role: "user", content: "alpha", timestamp: 1 },
@@ -64,6 +63,7 @@ test("context objects mirror Prime without changing its messages", async () => {
 
   leaf = "user-2";
   branch.push({ type: "message", id: leaf, parentId: "assistant-1", message: { role: "user", content: "gamma" } });
+  await writeFile(sessionFile, branch.map(value => JSON.stringify(value)).join("\n") + "\n");
   messages.push({ role: "user", content: "gamma", timestamp: 3 });
   const appended = await store.sync(ctx, messages);
   assert(appended);
@@ -73,13 +73,14 @@ test("context objects mirror Prime without changing its messages", async () => {
   assert.equal(appended.manifest.branchId, leaf);
 
   const stored = JSON.parse(await readFile(join(appended.root, appended.manifest.snapshot), "utf8"));
-  assert.equal(stored.version, "prime-agent-dsh/derived-object-v2");
+  assert.equal(stored.version, "prime-agent-dsh/derived-object-v3-reference");
   const snapshot = stored.compatibility;
   assert.equal(snapshot.version, "prime-agent-dsh/durable-store-v1");
   assert.equal(snapshot.messages, undefined);
   assert.equal(stored.effective, undefined);
   assert.equal(stored.effectiveEntryDigests.length, 3);
-  assert.deepEqual(snapshot.entries.map((entry: { id?: string }) => entry.id), ["user-1", "assistant-1", "user-2"]);
+  assert.deepEqual(stored.sourceLocators.map((entry: { entryId?: string }) => entry.entryId), ["user-1", "assistant-1", "user-2"]);
+  assert.deepEqual(snapshot.entries, []);
 });
 
 
@@ -103,11 +104,10 @@ test("context sync sanitizes runtime-only child task and tool result metadata", 
   const synced = await new ContextObjectStore().sync(ctx, messages);
   assert(synced);
   const stored = JSON.parse(await readFile(join(synced.root, synced.manifest.snapshot), "utf8"));
-  const durableMessages = await Promise.all(stored.effectiveEntryDigests.map(async (digest: string) => JSON.parse(await readFile(join(synced.root, "bodies", `${digest}.json`), "utf8"))));
-  assert.equal(durableMessages[0].content[0].text, "[task from parent] keep this task text");
-  assert.equal(durableMessages[2].content[0].content[0].text, "useful tool output");
-  assert.deepEqual(durableMessages[0].source.prime.fields.details, { delivery: "child" });
-  assert.deepEqual(durableMessages[2].source.prime.fields.details, { exitCode: 0, bytes: "12" });
+  assert.equal(stored.version, "prime-agent-dsh/derived-object-v3-reference");
+  assert.deepEqual(stored.sourceLocators, []);
+  assert.ok(stored.effectiveReferences.every((reference: { sourceIndex: number | null }) => reference.sourceIndex === null));
+  assert.equal((await (await import("node:fs/promises")).readdir(synced.root)).includes("bodies"), false);
   assert.equal(Object.isFrozen(taskDetails), false);
   assert.equal(Object.isFrozen(resultDetails), false);
 });
@@ -121,6 +121,7 @@ test("restart repairs a corrupt compatibility manifest and Python reads the comm
   const sessionFile = join(sessions, `${sessionId}.jsonl`);
   await writeFile(sessionFile, "", "utf8");
   const branch = [{ type: "message", id: "u1", parentId: null, message: { role: "user", content: "persist me" } }];
+  await writeFile(sessionFile, branch.map(value => JSON.stringify(value)).join("\n") + "\n");
   const ctx = primeContext(sessionId, sessionFile, branch, () => "u1");
   const messages = [{ role: "user", content: "persist me" }];
   const first = await new ContextObjectStore().sync(ctx, messages);
@@ -142,8 +143,9 @@ test("restart repairs a corrupt compatibility manifest and Python reads the comm
 test("real ContextObjectStore survives a greater-than-2000 message restart, query, and spill lifecycle",async()=>{
  const home=await mkdtemp(join(tmpdir(),"prime-dsh-large-"));const sessions=join(home,"sessions");await mkdir(sessions);const sessionId="large-session",sessionFile=join(sessions,`${sessionId}.jsonl`);await writeFile(sessionFile,"");
  const branch:unknown[]=[],messages:unknown[]=[];for(let i=0;i<2101;i++){const content=i===2100?`needle-${i}-`+"🙂".repeat(40000):`message-${i}`;branch.push({type:"message",id:`m-${i}`,parentId:i?`m-${i-1}`:null,message:{role:"user",content}});messages.push({role:"user",content,timestamp:i});}
- const ctx=primeContext(sessionId,sessionFile,branch,()=>"m-2100");const first=await new ContextObjectStore().sync(ctx,messages);assert(first);assert.equal(first.manifest.messageCount,2101);assert.equal(first.manifest.cropped,true);
+ await writeFile(sessionFile,branch.map(value=>JSON.stringify(value)).join("\n")+"\n");
+ const ctx=primeContext(sessionId,sessionFile,branch,()=>"m-2100");const first=await new ContextObjectStore().sync(ctx,messages);assert(first);assert.equal(first.manifest.messageCount,2101);assert.equal(first.manifest.cropped,false);
  const recovered=new ContextObjectStore().recover(ctx);assert.equal(recovered?.object.compatibility.messageCount,2101);
- const query=new DurableContextQuery({root:first.root,sessionId,primeSessionFile:sessionFile});const hits=query.query({query:"needle-2100",limit:2});assert.equal(hits.hits.length,1);assert.equal(hits.hits[0]?.trace.entryIndex,2100);
- const entry=recovered?.object.compatibility.entries.at(-1) as {contextSpill?:unknown};assert.ok(entry.contextSpill);const exact=await resolveContextSpill(new DurableFileAttachments({dshHome:first.root}),entry.contextSpill as never);assert.ok(exact.startsWith("needle-2100-"));assert.ok(exact.endsWith("🙂"));
+ const query=new DurableContextQuery({root:first.root,sessionId,primeSessionFile:sessionFile});const hits=query.query({query:"needle-2100",scope:"source",limit:2});assert.equal(hits.hits.length,1);assert.equal(hits.hits[0]?.trace.entryIndex,2100);
+ assert.deepEqual(recovered?.object.compatibility.entries,[]);assert.equal((await (await import("node:fs/promises")).readdir(first.root)).includes("bodies"),false);
 });

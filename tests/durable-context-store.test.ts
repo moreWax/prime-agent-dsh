@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
+import { appendFileSync } from "node:fs";
 import { once } from "node:events";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
@@ -9,14 +10,18 @@ import { join } from "node:path";
 import test from "node:test";
 import { DurableContextStore, type FaultBoundary } from "../src/durable-context-store.js";
 
+let activeSession = "";
 async function fixture(options: Partial<ConstructorParameters<typeof DurableContextStore>[0]> = {}) {
   const temporary = await mkdtemp(join(tmpdir(), "durable-context-"));
-  const session = join(temporary, "prime.jsonl"); await writeFile(session, "", "utf8");
+  const session = join(temporary, "prime.jsonl"); await writeFile(session, "", "utf8"); activeSession = session;
   const root = join(temporary, "store");
   const store = new DurableContextStore({ root, binding: { sessionId: "session-a", primeSessionFile: session }, ...options });
   return { temporary, session, root, store };
 }
-const input = (source: unknown[], effective = source, observedAt = 1) => ({ source, effective, observedAt, converterVersion: "converter-1", schemaVersion: "schema-1", branchId: "leaf" });
+const input = (source: unknown[], effective = source, observedAt = 1) => {
+  if (activeSession && source.length) appendFileSync(activeSession, source.map(value => JSON.stringify(value)).join("\n") + "\n");
+  return { source, effective, observedAt, converterVersion: "converter-1", schemaVersion: "schema-1", branchId: "leaf" };
+};
 
 test("publishes immutable generations, proves append prefixes, and replays as a no-op", async () => {
   const { store } = await fixture();
@@ -70,6 +75,7 @@ test("atomic directory lock excludes independent processes", async () => {
   const f = await fixture();
   const moduleUrl = pathToFileURL(join(process.cwd(), "src", "durable-context-store.ts")).href;
   const run = promisify(execFile);
+  appendFileSync(f.session, Array.from({ length: 4 }, (_, process) => JSON.stringify({ process })).join("\n") + "\n");
   const launches = Array.from({ length: 4 }, (_, index) => {
     const code = `import { DurableContextStore } from ${JSON.stringify(moduleUrl)};
 const store = new DurableContextStore({root:${JSON.stringify(f.root)},binding:{sessionId:"session-a",primeSessionFile:${JSON.stringify(f.session)}}});
@@ -83,12 +89,11 @@ console.log(result.commit.generation);`;
   assert.equal(f.store.recover()?.commit.generation, 4);
 });
 
-test("compatibility view is bounded and UTF-8 crops long entries", async () => {
+test("reference-only compatibility view never persists preview text", async () => {
   const { store } = await fixture({ maxEntries: 2, maxEntryBytes: 80 });
   const result = await store.publish(input([{ text: "discarded" }, { text: "🙂".repeat(100) }, { content: "short" }], [{ role: "user", content: "effective" }]));
   const view = result.object.compatibility;
-  assert.equal(view.entries.length, 2); assert.equal(view.entries[0]?.index, 1); assert.equal(view.entries[0]?.truncated, true);
-  assert.match(view.entries[0]?.text ?? "", /UTF-8 bytes omitted/); assert.equal(view.messages, undefined); assert.equal(view.cropped, true);
+  assert.deepEqual(view.entries, []); assert.equal(view.messages, undefined); assert.equal(view.cropped, false);
   assert.equal(view.sourceDigest, result.commit.sourceDigest); assert.equal(view.effectiveDigest, result.commit.effectiveDigest);
 });
 
@@ -127,8 +132,8 @@ test("more than 2000 compatibility entries are bounded while an oversized effect
   const { store } = await fixture({ maxObjectBytes: 1_000_000 });
   const many = Array.from({ length: 2_101 }, (_, index) => ({ text: `entry-${index}` }));
   const published = await store.publish(input(many, [{ role: "user", content: "bounded" }]));
-  assert.equal(published.object.compatibility.entries.length, 2_000);
-  assert.equal(published.object.compatibility.entries[0]?.index, 101);
+  assert.deepEqual(published.object.compatibility.entries, []);
+  assert.equal(published.object.sourceLocators?.length, 2_101);
   const large = await store.publish(input(many, [{ role: "user", content: "x".repeat(2_000_000) }]));
   assert.equal(store.recover()?.commitDigest, large.commitDigest);
   assert.equal(large.object.effective, undefined);
@@ -169,22 +174,24 @@ test("durable publication rejects lone surrogates without replacing the prior va
 });
 
 
-test("v2 publishes and recovers cumulative effective context larger than 16 MiB without a monolithic object", async () => {
+test("v3 references cumulative Prime context larger than 16 MiB without duplicate bodies", async () => {
   const { root, store } = await fixture();
   const effective = Array.from({ length: 17 }, (_, index) => ({ role: "user", content: `${index}:` + "x".repeat(1024 * 1024) }));
   const result = await store.publish(input(effective));
   const objectRaw = await readFile(join(root, "objects", `${result.commit.object}.json`));
-  assert.equal(result.object.version, "prime-agent-dsh/derived-object-v2");
+  assert.equal(result.object.version, "prime-agent-dsh/derived-object-v3-reference");
   assert.ok(objectRaw.byteLength < 16 * 1024 * 1024);
   assert.equal(result.object.compatibility.messages, undefined);
   assert.equal(store.recover()?.commitDigest, result.commitDigest);
 });
 
-test("v2 recovery fails closed on a missing or tampered entry body", async () => {
-  const { root, store } = await fixture();
+test("v3 recovery fails closed on a tampered located Prime entry", async () => {
+  const { session, store } = await fixture();
   const old = await store.publish(input([{ text: "old" }]));
   const latest = await store.publish(input([{ text: "old" }, { text: "latest" }]));
-  const body = latest.object.effectiveEntryDigests[1]; assert.ok(body);
-  await writeFile(join(root, "bodies", `${body}.json`), '{"text":"tampered"}\n');
+  const locator = latest.object.sourceLocators?.[1]; assert.ok(locator);
+  const raw = await readFile(session); const replacement = Buffer.from(JSON.stringify({ text: "tamper" }));
+  assert.equal(replacement.length, locator.byteLength);
+  replacement.copy(raw, locator.byteOffset); await writeFile(session, raw);
   assert.equal(store.recover()?.commitDigest, old.commitDigest);
 });

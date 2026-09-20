@@ -1,7 +1,7 @@
 # Durable context query adapter
 
 `src/durable-context-query.ts` is a read-only query layer for
-`DurableContextStore` commits. Prime's JSONL remains the canonical session. The
+`DurableContextStore` commits. Prime's JSONL is the only full-content authority. The
 publication store and every search view are derived and can be deleted and
 rebuilt from Prime through the publisher.
 
@@ -18,8 +18,10 @@ and extractor version. It must never become query or recovery authority.
 
 - The constructor verifies `BINDING` against both the session ID and canonical
   Prime file path. A store cannot be opened through another session binding.
-- Every head, commit, object, effective-array digest, and effective-entry digest
-  is checked before use. A bad checkpoint is skipped and counted.
+- Every head, commit, object, locator, source-entry digest, and source aggregate
+  digest is checked before use. Effective hashes are provenance metadata; an
+  effective entry is returned only when it can be reconstructed losslessly.
+  A bad checkpoint is skipped and counted.
 - Literal matching is case-insensitive and whitespace-flexible. Regex patterns
   and flags are bounded. Full-text ranking uses deterministic BM25-style scores
   and stable tie breaks.
@@ -28,6 +30,6 @@ and extractor version. It must never become query or recovery authority.
   restart because their authority is immutable commits, not process memory.
 - Checkpoint count, query bytes, scanned entries, page size, and cursor bytes
   have explicit bounds.
-- Effective hits return exact JSON bodies. Source hits use the store's bounded
+- V3 source hits are dereferenced from the bound Prime JSONL and verify locator, ID, and digest. Effective hits are reconstructed only when a source mapping exists; `trace.exactBody` says whether reconstruction is byte-semantically exact. Legacy source hits use the store's bounded
   compatibility rendering and are marked `exactBody: false`; their provenance
   still carries the exact source-entry digest.

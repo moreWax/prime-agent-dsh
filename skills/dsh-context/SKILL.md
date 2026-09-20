@@ -57,6 +57,6 @@ A grant contains only the selected bounded value, its source snapshot identity, 
 - Search and inspect before admitting context; do not copy the complete transcript into active context.
 - Treat snapshots as read-only evidence at their recorded revision and branch leaf.
 - A child sees its own session snapshot. A small untrusted evidence capsule is inherited automatically through stock Prime lifecycle hooks; use an explicit capability grant for larger selected parent context.
-- Snapshot files and indexes are derived and rebuildable; Prime JSONL remains authoritative.
+- Reference-only snapshot metadata and indexes are derived and rebuildable. Prime JSONL is the only full-content authority; new DSH roots do not persist duplicate message bodies or compatibility text.
 - Printing `ctx.inject(...)` is the supported durable-admission path on Prime 0.9.5. Arbitrary extension-defined Python host requests are not public in that release.
 - Provider cache metrics are authoritative; context-object access itself does not imply a cache hit.

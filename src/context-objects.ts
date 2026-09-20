@@ -5,14 +5,11 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Message } from "@deepseek-ai/dsh-llm";
 import { primeToDshAsync, type PrimeEnvelope, type PrimeMessage } from "./context-converter.js";
 import { DurableContextStore, type PublishResult } from "./durable-context-store.js";
-import { DurableFileAttachments } from "./durable-file-attachments.js";
-import { spillContextText, type ContextSpillLocator } from "./context-spill.js";
-import { LocalDshImageAttachments, type DshImageAttachmentGateway } from "./dsh-image-attachments.js";
+import type { ContextSpillLocator } from "./context-spill.js";
 import { stableJson } from "./prefix-metrics.js";
+import { LocalDshImageAttachments, type DshImageAttachmentGateway } from "./dsh-image-attachments.js";
 
 export const CONTEXT_OBJECT_VERSION = "prime-agent-dsh/context-object-v1" as const;
-const MAX_MESSAGES = 2_000;
-const MAX_ENTRY_TEXT_BYTES = 64 * 1024;
 
 type JsonObject = Record<string, unknown>;
 
@@ -81,10 +78,6 @@ function isObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function optionalString(value: unknown, fallback = ""): string {
-  return typeof value === "string" ? value : fallback;
-}
-
 function tokenCount(value: unknown): number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
 }
@@ -110,60 +103,6 @@ function asPrimeInput(value: unknown): PrimeMessage | PrimeEnvelope {
   if (isObject(value.message) && typeof value.message.role === "string") return value as PrimeEnvelope;
   if (typeof value.role === "string") return value as PrimeMessage;
   throw new TypeError("Prime context message has no role");
-}
-
-function textFromContent(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  const text: string[] = [];
-  for (const block of content) {
-    if (!isObject(block)) continue;
-    if (block.type === "text" && typeof block.text === "string") text.push(block.text);
-    else if (block.type === "thinking" && typeof block.thinking === "string") text.push(block.thinking);
-    else if (block.type === "toolCall") text.push(`[tool ${optionalString(block.name, "unknown")}] ${stableJson(block.arguments ?? {})}`);
-    else if (block.type === "image") text.push(`[image ${optionalString(block.mimeType, "unknown")}]`);
-  }
-  return text.join("\n");
-}
-
-function cropUtf8(value: string, maxBytes: number): { text: string; truncated: boolean } {
-  const bytes = Buffer.byteLength(value, "utf8");
-  if (bytes <= maxBytes) return { text: value, truncated: false };
-  const suffix = `\n[… ${bytes - maxBytes} UTF-8 bytes omitted …]`;
-  const budget = Math.max(0, maxBytes - Buffer.byteLength(suffix, "utf8"));
-  let end = Math.min(value.length, budget);
-  while (end > 0 && Buffer.byteLength(value.slice(0, end), "utf8") > budget) end--;
-  return { text: value.slice(0, end) + suffix, truncated: true };
-}
-
-async function branchEntry(value: unknown, index: number, files: DurableFileAttachments): Promise<ContextObjectEntry> {
-  if (!isObject(value)) return { index, entryType: "unknown", text: "", truncated: false };
-  const message = isObject(value.message) ? value.message : undefined;
-  const role = typeof message?.role === "string" ? message.role : undefined;
-  const sourceText = role === "bashExecution"
-    ? `${optionalString(message?.command)}\n${optionalString(message?.output)}`
-    : role === "branchSummary" || role === "compactionSummary"
-      ? optionalString(message?.summary)
-      : textFromContent(message?.content ?? value.content);
-  // Persist the exact bytes before any compatibility crop. The attachment
-  // backend verifies sha256 and size when the locator is resolved after restart.
-  const spilled = await spillContextText(files, sourceText, {
-    thresholdBytes: MAX_ENTRY_TEXT_BYTES,
-    previewBytes: 4 * 1024,
-    name: role === "toolResult" ? "tool-result.txt" : "context-entry.txt",
-  });
-  const cropped = spilled.spilled ? { text: spilled.text, truncated: true } : cropUtf8(sourceText, MAX_ENTRY_TEXT_BYTES);
-  return {
-    index,
-    ...(typeof value.id === "string" ? { id: value.id } : {}),
-    ...(typeof value.parentId === "string" || value.parentId === null ? { parentId: value.parentId } : {}),
-    entryType: typeof value.type === "string" ? value.type : "unknown",
-    ...(role === undefined ? {} : { role }),
-    ...(typeof value.customType === "string" ? { customType: value.customType } : {}),
-    text: cropped.text,
-    truncated: cropped.truncated,
-    ...(spilled.spilled ? { contextSpill: spilled.locator } : {}),
-  };
 }
 
 function lstatExists(path: string): boolean {
@@ -234,11 +173,7 @@ export class ContextObjectStore {
       `prime-${createHash("sha256").update(`${messages.length - selectedMessages.length + index}:`).update(stableJson(message)).digest("hex").slice(0, 32)}`,
     )));
     const metrics = metricsFromBranch(rawBranch);
-    const selectedBranch = rawBranch.slice(-MAX_MESSAGES);
     const store = new DurableContextStore(binding);
-    const files = new DurableFileAttachments({ dshHome: root });
-    const compatibilityEntries = await Promise.all(selectedBranch.map((entry, offset) =>
-      branchEntry(entry, rawBranch.length - selectedBranch.length + offset, files)));
     const published = await store.publish({
       source: rawBranch,
       effective: canonical,
@@ -246,9 +181,8 @@ export class ContextObjectStore {
       schemaVersion: CONTEXT_OBJECT_VERSION,
       branchId,
       observedAt: Date.now(),
-      compatibilityEntries,
       compatibilityMetrics: { ...metrics },
-      cropped: selectedMessages.length !== messages.length || selectedBranch.length !== rawBranch.length,
+      cropped: selectedMessages.length !== messages.length,
     });
     const view = published.object.compatibility;
     const manifest: ContextObjectManifest = {
@@ -258,7 +192,7 @@ export class ContextObjectStore {
       revision: published.commit.generation,
       observedAt: published.commit.observedAt,
       messageCount: view.messageCount,
-      entryCount: view.entries.length,
+      entryCount: published.object.sourceEntryDigests.length,
       cropped: view.cropped,
       syncMode: published.mode,
       commonPrefixMessages: published.commit.commonPrefix,

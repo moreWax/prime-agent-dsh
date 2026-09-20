@@ -168,6 +168,7 @@ class ContextSnapshot:
         self.branch_id = str(data["branchId"])
         self.revision = int(data["revision"])
         self.cropped = bool(data.get("cropped", False))
+        self.unavailable_message_count = int(data.get("unavailableEffectiveEntries", 0))
         metrics = data.get("metrics")
         self.metrics = dict(metrics) if isinstance(metrics, dict) else {}
 
@@ -328,6 +329,7 @@ class ContextHandle:
         is_durable = durable_version in (
             "prime-agent-dsh/derived-object-v1",
             "prime-agent-dsh/derived-object-v2",
+            "prime-agent-dsh/derived-object-v3-reference",
         )
         actual = sha256(raw.rstrip(b"\n") if is_durable else raw).hexdigest()
         if actual != expected:
@@ -336,7 +338,90 @@ class ContextHandle:
             compatibility = stored.get("compatibility")
             if not isinstance(compatibility, dict) or compatibility.get("version") != "prime-agent-dsh/durable-store-v1":
                 raise RuntimeError("invalid DSH durable context object")
-            if durable_version == "prime-agent-dsh/derived-object-v2":
+            if durable_version == "prime-agent-dsh/derived-object-v3-reference":
+                binding = _read_json(self.root / "BINDING")
+                prime_raw = binding.get("primeSessionFile")
+                if not isinstance(prime_raw, str) or not os.path.isabs(prime_raw):
+                    raise RuntimeError("invalid DSH Prime binding")
+                prime_path = Path(prime_raw)
+                if prime_path.is_symlink() or not prime_path.is_file():
+                    raise RuntimeError("missing or unsafe bound Prime JSONL")
+                prime = prime_path.read_bytes()
+                digests = stored.get("sourceEntryDigests")
+                locators = stored.get("sourceLocators")
+                if not isinstance(digests, list) or not isinstance(locators, list) or len(digests) != len(locators):
+                    raise RuntimeError("invalid DSH source locators")
+                source: list[Any] = []
+                for index, (entry_digest, locator) in enumerate(zip(digests, locators)):
+                    if (not isinstance(entry_digest, str) or not re.fullmatch(r"[a-f0-9]{64}", entry_digest)
+                            or not isinstance(locator, dict) or locator.get("index") != index
+                            or locator.get("entryDigest") != entry_digest):
+                        raise RuntimeError("invalid DSH source locator")
+                    offset, length = locator.get("byteOffset"), locator.get("byteLength")
+                    if (not isinstance(offset, int) or isinstance(offset, bool) or offset < 0
+                            or not isinstance(length, int) or isinstance(length, bool) or length <= 0
+                            or offset + length > len(prime)):
+                        raise RuntimeError("invalid DSH source locator bounds")
+                    end = offset + length
+                    if ((offset > 0 and prime[offset - 1] != 0x0A)
+                            or (end < len(prime) and prime[end] != 0x0A
+                                and not (prime[end] == 0x0D and end + 1 < len(prime) and prime[end + 1] == 0x0A))):
+                        raise RuntimeError("DSH source locator is not a complete JSONL line")
+                    try:
+                        value = json.loads(prime[offset:offset + length])
+                    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                        raise RuntimeError("invalid located Prime JSONL entry") from error
+                    if sha256(_canonical_json(value)).hexdigest() != entry_digest:
+                        raise RuntimeError("bound Prime JSONL entry digest mismatch")
+                    entry_id = locator.get("entryId")
+                    if entry_id is not None and (not isinstance(value, dict) or value.get("id") != entry_id):
+                        raise RuntimeError("bound Prime JSONL entry id mismatch")
+                    source.append(value)
+                if sha256(_canonical_json(source)).hexdigest() != stored.get("sourceDigest"):
+                    raise RuntimeError("DSH source aggregate digest mismatch")
+                refs = stored.get("effectiveReferences")
+                effective_digests = stored.get("effectiveEntryDigests")
+                if not isinstance(refs, list) or not isinstance(effective_digests, list) or len(refs) != len(effective_digests):
+                    raise RuntimeError("invalid DSH effective references")
+                messages: list[Any] = []
+                unavailable = 0
+                for index, (reference, expected_digest) in enumerate(zip(refs, effective_digests)):
+                    if not isinstance(reference, dict) or reference.get("entryDigest") != expected_digest:
+                        raise RuntimeError("invalid DSH effective reference")
+                    source_index = reference.get("sourceIndex")
+                    if source_index is None:
+                        unavailable += 1
+                        continue
+                    if not isinstance(source_index, int) or isinstance(source_index, bool) or not 0 <= source_index < len(source):
+                        raise RuntimeError("invalid DSH effective source index")
+                    entry = source[source_index]
+                    message = entry.get("message", entry) if isinstance(entry, dict) else entry
+                    if not isinstance(message, dict):
+                        continue
+                    message = dict(message)
+                    if isinstance(message.get("content"), str):
+                        message["content"] = [{"type": "text", "text": message["content"]}]
+                    messages.append(message)
+                def entry_text(value: Any) -> str:
+                    if isinstance(value, dict):
+                        message = value.get("message")
+                        candidate = message if isinstance(message, dict) else value
+                        content = candidate.get("content")
+                        if isinstance(content, str):
+                            return content
+                        if isinstance(content, list):
+                            return _message_text({"content": content})
+                        if isinstance(candidate.get("summary"), str):
+                            return candidate["summary"]
+                    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+                entries = [{**value, "index": index, "text": entry_text(value)} if isinstance(value, dict)
+                           else {"index": index, "text": entry_text(value), "value": value}
+                           for index, value in enumerate(source)]
+                if compatibility.get("messageCount") != len(refs) or compatibility.get("entries") != [] or "messages" in compatibility:
+                    raise RuntimeError("invalid DSH reference-only compatibility view")
+                compatibility = {**compatibility, "entries": entries, "messages": messages,
+                                 "unavailableEffectiveEntries": unavailable}
+            elif durable_version == "prime-agent-dsh/derived-object-v2":
                 def read_bodies(field: str, aggregate: str) -> list[Any]:
                     digests = stored.get(field)
                     if not isinstance(digests, list) or not all(isinstance(item, str) and re.fullmatch(r"[a-f0-9]{64}", item) for item in digests):
