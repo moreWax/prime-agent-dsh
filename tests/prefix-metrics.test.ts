@@ -15,9 +15,10 @@ test("LCP is measured in UTF-8 bytes", () => {
 
 test("tracker reports append and rewrite without retaining public payload", () => {
   const tracker = new PrefixTracker();
-  assert.equal(tracker.measure("a".repeat(100)).reason, "initial");
-  const appended = tracker.measure("a".repeat(101));
+  assert.equal(tracker.measure("a".repeat(4096)).reason, "initial");
+  const appended = tracker.measure("a".repeat(4097));
   assert.equal(appended.reason, "append");
-  assert.equal(appended.commonPrefixBytes, 101); // quote plus 100 payload bytes
+  assert(appended.commonPrefixBytes >= 3840, "rewrites are measured as a chunked lower bound");
   assert.equal(tracker.measure("xyz").reason, "model-or-envelope");
+  assert.doesNotMatch(JSON.stringify(tracker), /a{32}/, "tracker retains fingerprints, not payload text");
 });

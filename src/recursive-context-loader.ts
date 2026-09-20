@@ -37,10 +37,23 @@ export class RecursiveContextLoader {
       await this.synchronize(ctx, scope, event.messages);
       // Observation only: returning no replacement preserves Prime's exact Context.
     });
+    // message_end fires before Prime persists the finalized message. turn_end is
+    // the first public barrier where the complete turn is in SessionManager.
+    pi.on("turn_end", async (_event, ctx) => {
+      const scope = this.scopes.get(this.sessionId(ctx)) ?? this.bind(ctx);
+      await this.synchronize(ctx, scope);
+    });
+    pi.on("session_compact", async (_event, ctx) => {
+      const scope = this.scopes.get(this.sessionId(ctx)) ?? this.bind(ctx);
+      await this.synchronize(ctx, scope);
+    });
     pi.on("session_shutdown", async (_event, ctx) => {
-      await Promise.resolve();
-      if (ctx?.sessionManager) this.scopes.delete(this.sessionId(ctx));
-      else this.scopes.clear();
+      if (ctx?.sessionManager) {
+        const sessionId = this.sessionId(ctx);
+        const scope = this.scopes.get(sessionId);
+        if (scope) await this.synchronize(ctx, scope);
+        this.scopes.delete(sessionId);
+      } else this.scopes.clear();
     });
   }
 
@@ -91,10 +104,14 @@ export class RecursiveContextLoader {
         content: value.content, ...(usage ? { usage: { input: number(usage.input), output: number(usage.output), cacheRead: number(usage.cacheRead), cacheWrite: number(usage.cacheWrite) } } : {}) }];
     });
     const measurement = measureSessionTokens(messages);
-    const model = ctx.model as (typeof ctx.model & { contextWindow?: number }) | undefined;
-    const reportedWindow = model?.contextWindow;
-    const contextWindow = Number.isSafeInteger(reportedWindow) && (reportedWindow ?? 0) > 0 ? reportedWindow as number : 128_000;
-    scope.pressure = { level: classifyTokenPressure(measurement.surfaceTokens, contextWindow), measurement, contextWindow };
+    const usage = ctx.getContextUsage?.();
+    const contextWindow = usage?.contextWindow;
+    if (Number.isSafeInteger(contextWindow) && (contextWindow ?? 0) > 0) {
+      scope.pressure = { level: classifyTokenPressure(measurement.surfaceTokens, contextWindow as number), measurement, contextWindow: contextWindow as number };
+    } else {
+      // Unknown capacity is not permission to invent a 128k window or compact.
+      delete scope.pressure;
+    }
     const series = new ProviderCacheSeries();
     let request = 0;
     for (const message of messages) if (message.role === "assistant" && message.usage) {

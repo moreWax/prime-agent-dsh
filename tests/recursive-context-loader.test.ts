@@ -68,7 +68,12 @@ test("recursive loader isolates root and RLM child scopes", async () => {
   assert.equal(loader.status(root)?.syncs, 1);
   assert.equal(loader.status(child)?.syncs, 2);
   assert.equal(loader.status(child)?.lastSync?.manifest.sessionId, "child");
+  await emit(handlers, "turn_end", {}, child);
+  assert.equal(loader.status(child)?.syncs, 3);
+  await emit(handlers, "session_compact", {}, child);
+  assert.equal(loader.status(child)?.syncs, 4);
   await emit(handlers, "session_shutdown", {}, child);
+  assert.equal(calls.filter((id) => id === "child").length, 5, "shutdown performs one final durability sync");
   assert.equal(loader.status(child), undefined);
   assert(loader.status(root));
 });

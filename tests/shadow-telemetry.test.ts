@@ -11,8 +11,8 @@ test("telemetry is session keyed and records the current branch", () => {
   telemetry.observe("before_provider_request", { model: "m" }, { sessionId: "s2", branchId: "leaf-x" });
   assert.equal(JSON.stringify(payload), original);
   assert.equal(telemetry.status("s1", "leaf-b")?.branchId, "leaf-b");
-  assert.equal(telemetry.status("s1", "leaf-a")?.observations, 2);
-  assert.equal(telemetry.status("s1", "leaf-b")?.observations, 2);
+  assert.equal(telemetry.status("s1", "leaf-a")?.observations, 1);
+  assert.equal(telemetry.status("s1", "leaf-b")?.observations, 1);
   assert.equal(telemetry.traces().length, 2);
   assert.doesNotMatch(JSON.stringify(telemetry.status("s1")), /secret body/);
 });

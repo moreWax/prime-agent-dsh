@@ -30,7 +30,7 @@ interface SessionState {
  */
 export class ShadowContextTelemetry {
   private readonly sessions = new Map<string, SessionState>();
-  private key(location: ShadowLocation): string { return location.sessionId; }
+  private key(location: ShadowLocation): string { return JSON.stringify([location.sessionId, location.branchId]); }
   private readonly trace: ShadowTraceEntry[] = [];
   constructor(private readonly traceLimit = 128) {}
 
