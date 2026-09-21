@@ -4,7 +4,6 @@ import { dirname, join, sep } from "node:path";
 import { buildContextEntries, sessionEntryToContextMessages, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { primeToDshAsync, type PrimeEnvelope, type PrimeMessage } from "./context-converter.js";
 import { DurableContextStore, type PublicationDiagnostics, type PublishResult } from "./durable-context-store.js";
-import { cacheEpochFromBranch, type CacheEpochDiagnostics } from "./cache-epoch-diagnostics.js";
 import { stableJson } from "./prefix-metrics.js";
 import { LocalDshImageAttachments, type DshImageAttachmentGateway } from "./dsh-image-attachments.js";
 
@@ -41,7 +40,6 @@ export interface ContextObjectManifest {
   readonly sourceDigest?: string;
   readonly effectiveDigest?: string;
   readonly publication?: PublicationDiagnostics;
-  readonly cacheEpoch?: CacheEpochDiagnostics;
 }
 
 export interface ContextObjectSyncResult {
@@ -154,7 +152,6 @@ export class ContextObjectStore {
     const publication = recovered.commit.publication ?? {
       source: { mode: "noop" as const, reused: recovered.object.sourceEntryDigests.length, new: 0, reindexed: 0 },
       effective: { reused: recovered.object.effectiveEntryDigests.length, new: 0, reindexed: 0, rebuildReason: "none" as const },
-      compactionBoundaryChanged: false, alertUnchangedSourceReindexed: false,
     };
     return { ...recovered, mode: "noop", publication };
   }
@@ -215,7 +212,6 @@ export class ContextObjectStore {
       sourceDigest: published.commit.sourceDigest,
       effectiveDigest: published.commit.effectiveDigest,
       publication: published.publication,
-      cacheEpoch: cacheEpochFromBranch(sessionId, rawBranch),
     };
     ensurePrivateDirectory(root);
     const branchKey = createHash("sha256").update(branchId).digest("hex");

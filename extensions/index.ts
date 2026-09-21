@@ -1,8 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { readdirSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
-import { compactWithWarmPrefix } from "../src/cache-friendly-compaction.js";
-import { DurableCompactionController, loadCompactionPlannerConfig } from "../src/compaction.js";
 import { contextObjectRoot } from "../src/context-objects.js";
 import { RecursiveContextLoader } from "../src/recursive-context-loader.js";
 import { RlmContextInheritance } from "../src/rlm-context-bootstrap.js";
@@ -44,7 +42,7 @@ function recentSiblingSession(ctx: ExtensionContext): { id: string; ageMinutes: 
 /**
  * Prime owns the model loop, tools, transcript, and RLM tree. DSH contributes a
  * rebuildable context projection, immutable Python-visible artifacts, cache
- * observations, and an optional Prime-committed compaction planner.
+ * observations. Prime alone owns compaction and DSH only indexes committed history.
  */
 export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
   registerShadowContextTelemetry(pi);
@@ -52,16 +50,6 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
   inheritance.register(pi);
   const contextLoader = new RecursiveContextLoader();
   contextLoader.register(pi);
-
-  pi.registerFlag("dsh-compaction", {
-    type: "string",
-    description: "DSH compaction planner: off, shadow, or active",
-  });
-  const compactionController = new DurableCompactionController(
-    loadCompactionPlannerConfig(pi.getFlag("dsh-compaction") as string | undefined),
-    async (event, ctx, plan) => compactWithWarmPrefix(pi, event, ctx, plan),
-  );
-  compactionController.register(pi);
 
   pi.on("session_start", async (_event, ctx) => {
     await Promise.resolve();
@@ -100,12 +88,10 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
         const scope = contextLoader.status(ctx);
         const latest = scope?.lastSync?.manifest;
         const selected = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "none";
-        const epoch = scope?.cacheEpoch ?? latest?.cacheEpoch;
         const publication = latest?.publication;
-        const compaction = compactionController.diagnostics();
         ctx.ui.notify(
-          `DSH context: enabled=${contextLoader.isEnabled(ctx)}, inheritance=${inheritance.status(ctx).state}, loop=Prime, model=${selected}, syncs=${scope?.syncs ?? 0}, errors=${scope?.errors ?? 0}, revision=${latest?.revision ?? 0}, entries=${latest?.entryCount ?? 0}, cacheEpoch=${epoch?.epochId.slice(0, 12) ?? "pending"}, summaryCache=${epoch?.summaryRequest?.cacheReadTokens ?? "unreported"}/${epoch?.summaryRequest?.cacheWriteTokens ?? "unreported"}, firstAfterCompaction=${epoch?.firstAfterCompaction?.cacheReadTokens ?? "pending"}, stableSamples=${epoch?.stableSampleCount ?? 0}, source=${publication ? `${publication.source.mode}:${publication.source.reused}/${publication.source.new}/${publication.source.reindexed}` : "pending"}, effectiveReason=${publication?.effective.rebuildReason ?? "pending"}, compactionMode=${compaction.mode}, compactions=${compaction.active}/${compaction.plans}, cacheRead=${latest?.metrics.cacheReadTokens ?? 0}, cacheWrite=${latest?.metrics.cacheWriteTokens ?? 0}`,
-          scope?.lastError || publication?.alertUnchangedSourceReindexed ? "warning" : "info",
+          `DSH context: enabled=${contextLoader.isEnabled(ctx)}, inheritance=${inheritance.status(ctx).state}, loop=Prime, model=${selected}, syncs=${scope?.syncs ?? 0}, errors=${scope?.errors ?? 0}, revision=${latest?.revision ?? 0}, entries=${latest?.entryCount ?? 0}, source=${publication ? `${publication.source.mode}:${publication.source.reused}/${publication.source.new}/${publication.source.reindexed}` : "pending"}, effective=${publication ? `${publication.effective.reused}/${publication.effective.new}/${publication.effective.reindexed}` : "pending"}, effectiveReason=${publication?.effective.rebuildReason ?? "pending"}, cacheRead=${latest?.metrics.cacheReadTokens ?? 0}, cacheWrite=${latest?.metrics.cacheWriteTokens ?? 0}`,
+          scope?.lastError ? "warning" : "info",
         );
         return;
       }

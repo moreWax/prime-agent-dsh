@@ -74,8 +74,6 @@ export type EffectiveProjectionRebuildReason = "initial" | "none" | "converter-c
 export interface PublicationDiagnostics {
   readonly source: { readonly mode: "append" | "rebuild" | "noop"; readonly reused: number; readonly new: number; readonly reindexed: number };
   readonly effective: { readonly reused: number; readonly new: number; readonly reindexed: number; readonly rebuildReason: EffectiveProjectionRebuildReason };
-  readonly compactionBoundaryChanged: boolean;
-  readonly alertUnchangedSourceReindexed: boolean;
 }
 export interface DerivedCommit {
   readonly version: typeof DURABLE_COMMIT_VERSION;
@@ -499,7 +497,6 @@ export class DurableContextStore {
     if (same) return { ...prior, mode: "noop", publication: {
       source: { mode: "noop", reused: sourceEntryDigests.length, new: 0, reindexed: 0 },
       effective: { reused: effectiveEntryDigests.length, new: 0, reindexed: 0, rebuildReason: "none" },
-      compactionBoundaryChanged: false, alertUnchangedSourceReindexed: false,
     } };
     let prefix = 0;
     if (prior && prior.commit.converterVersion === input.converterVersion && prior.commit.schemaVersion === input.schemaVersion) {
@@ -515,18 +512,14 @@ export class DurableContextStore {
     const append = sourceAppend && effectivePrefix === prior.object.effectiveEntryDigests.length;
     const sourceCounts = reuseCounts(prior?.object.sourceEntryDigests ?? [], sourceEntryDigests);
     const effectiveCounts = reuseCounts(prior?.object.effectiveEntryDigests ?? [], effectiveEntryDigests);
-    // A compaction boundary is newly observed when it occurs after the unchanged
-    // source prefix. No content is retained in this diagnostic.
-    const appendedCompaction = source.slice(prefix).some((value) => value && !Array.isArray(value) && typeof value === "object" && (value as { type?: unknown }).type === "compaction");
     const effectiveReason: EffectiveProjectionRebuildReason = !prior ? "initial"
       : prior.commit.converterVersion !== input.converterVersion || prior.commit.schemaVersion !== input.schemaVersion ? "converter-change"
       : prefix < prior.object.sourceEntryDigests.length ? "source-diverged"
       : sourceAppend && effectivePrefix < prior.object.effectiveEntryDigests.length ? "source-append-effective-projection-change"
       : effectivePrefix < prior.object.effectiveEntryDigests.length ? "effective-diverged" : "none";
     const publication: PublicationDiagnostics = {
-      source: { mode: sourceAppend ? "append" : "rebuild", ...sourceCounts }, effective: { ...effectiveCounts, rebuildReason: effectiveReason },
-      compactionBoundaryChanged: appendedCompaction,
-      alertUnchangedSourceReindexed: appendedCompaction && sourceCounts.reindexed > 0,
+      source: { mode: sourceAppend ? "append" : "rebuild", ...sourceCounts },
+      effective: { ...effectiveCounts, rebuildReason: effectiveReason },
     };
     // V3 stores only verified references into Prime JSONL. Compatibility input is
     // deliberately ignored because it may contain cropped copies of secret text.

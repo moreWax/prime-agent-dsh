@@ -1,8 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ContextObjectStore, type ContextObjectSyncResult } from "./context-objects.js";
-import { classifyTokenPressure, measureSessionTokens, type PressureLevel, type SessionTokenBreakdown } from "./context-pressure.js";
 import { ProviderCacheSeries, type ProviderCacheAggregate } from "./provider-cache-series.js";
-import type { CacheEpochDiagnostics } from "./cache-epoch-diagnostics.js";
 
 const number = (value: unknown): number | undefined => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 
@@ -21,9 +19,7 @@ export interface SessionContextScope {
   lastError?: string;
   syncs: number;
   errors: number;
-  pressure?: { readonly level: PressureLevel; readonly measurement: SessionTokenBreakdown; readonly contextWindow: number };
   cache?: ProviderCacheAggregate;
-  cacheEpoch?: CacheEpochDiagnostics;
   dirty?: boolean;
   pending?: PendingSync;
   running?: Promise<void>;
@@ -46,7 +42,7 @@ export class RecursiveContextLoader {
     });
     pi.on("context", (event, ctx) => {
       const scope = this.scopeFor(ctx);
-      this.measureRuntime(ctx, scope, event.messages);
+      this.observeProviderCache(scope, event.messages);
       void this.requestSync(ctx, scope, event.messages, false);
       // Observation only: durable conversion and fsync run after this hook returns.
     });
@@ -115,7 +111,7 @@ export class RecursiveContextLoader {
     try {
       const synced = await this.store.sync(ctx, messages);
       if (this.scopes.get(scope.sessionId) !== scope) return;
-      if (synced) { scope.lastSync = synced; scope.cacheEpoch = synced.manifest.cacheEpoch; }
+      if (synced) scope.lastSync = synced;
       scope.lastError = undefined;
       scope.syncs++;
     } catch (error) {
@@ -151,28 +147,17 @@ export class RecursiveContextLoader {
   }
 
 
-  /** Rebuild on every native context event, so retries/replays never double count. */
-  private measureRuntime(ctx: ExtensionContext, scope: SessionContextScope, input: readonly unknown[]): void {
-    const messages = input.flatMap((raw, index) => {
-      if (!raw || typeof raw !== "object") return [];
-      const value = raw as Record<string, unknown>;
-      const usage = value.usage && typeof value.usage === "object" ? value.usage as Record<string, unknown> : undefined;
-      return [{ id: typeof value.id === "string" ? value.id : `context-${index}`, role: typeof value.role === "string" ? value.role : "unknown",
-        content: value.content, ...(usage ? { usage: { input: number(usage.input), output: number(usage.output), cacheRead: number(usage.cacheRead), cacheWrite: number(usage.cacheWrite) } } : {}) }];
-    });
-    const measurement = measureSessionTokens(messages);
-    const usage = ctx.getContextUsage?.();
-    const contextWindow = usage?.contextWindow;
-    if (Number.isSafeInteger(contextWindow) && (contextWindow ?? 0) > 0) {
-      scope.pressure = { level: classifyTokenPressure(measurement.surfaceTokens, contextWindow as number), measurement, contextWindow: contextWindow as number };
-    } else {
-      // Unknown capacity is not permission to invent a 128k window or compact.
-      delete scope.pressure;
-    }
+  /** Rebuild provider-reported cache accounting from the current native context. */
+  private observeProviderCache(scope: SessionContextScope, input: readonly unknown[]): void {
     const series = new ProviderCacheSeries();
     let request = 0;
-    for (const message of messages) if (message.role === "assistant" && message.usage) {
-      request++; series.add({ request, inputTokens: message.usage.input, cacheReadTokens: message.usage.cacheRead, cacheWriteTokens: message.usage.cacheWrite });
+    for (const raw of input) {
+      if (!raw || typeof raw !== "object") continue;
+      const value = raw as Record<string, unknown>;
+      if (value.role !== "assistant" || !value.usage || typeof value.usage !== "object") continue;
+      const usage = value.usage as Record<string, unknown>;
+      request++;
+      series.add({ request, inputTokens: number(usage.input), cacheReadTokens: number(usage.cacheRead), cacheWriteTokens: number(usage.cacheWrite) });
     }
     scope.cache = series.aggregate();
   }
