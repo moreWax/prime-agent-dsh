@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import * as PiAi from "@earendil-works/pi-ai";
-import { contentText, type Api, type AssistantMessage, type Context, type Message, type Model, type SimpleStreamOptions, type Tool, type Usage } from "@earendil-works/pi-ai";
+import { type Api, type AssistantMessage, type Context, type Message, type Model, type SimpleStreamOptions, type Tool, type Usage } from "@earendil-works/pi-ai";
 import { convertToLlm, type ExtensionAPI, type ExtensionContext, type SessionBeforeCompactEvent, type CompactionResult } from "@earendil-works/pi-coding-agent";
 import type { CompactionPlan } from "./compaction.js";
 
@@ -72,7 +72,7 @@ function summaryText(response: AssistantMessage): string {
     throw new Error(`cache-friendly compaction failed: ${response.errorMessage || response.stopReason}`);
   }
   if (response.content.some((block) => block.type === "toolCall")) throw new Error("cache-friendly compaction attempted a tool call");
-  const text = contentText(response.content).trim();
+  const text = response.content.flatMap((block) => block.type === "text" ? [block.text] : []).join("\n").trim();
   if (!text) throw new Error("cache-friendly compaction returned no summary text");
   return text;
 }
