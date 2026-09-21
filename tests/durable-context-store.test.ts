@@ -261,3 +261,31 @@ test("compaction alerts when unchanged Prime source entries are reindexed", asyn
   assert.equal(bad.publication.source.reindexed, 1);
   assert.equal(bad.publication.alertUnchangedSourceReindexed, true);
 });
+
+
+test("durable generations and reference objects remain bounded during a publication soak", async () => {
+  const f = await fixture({ retainGenerations: 2 });
+  let latest;
+  for (let index = 0; index < 24; index++) {
+    latest = await f.store.publish({ ...input([{ index }]), branchId: `leaf-${index}` });
+    const fs = await import("node:fs/promises");
+    for (const directory of ["heads", "commits", "objects"]) {
+      const names = (await fs.readdir(join(f.root, directory))).filter((name) => !name.startsWith(".tmp-"));
+      assert.ok(names.length <= 2, `${directory} leaked ${names.length} generations`);
+    }
+  }
+  assert(latest);
+  const recovered = new DurableContextStore({ root: f.root, binding: { sessionId: "session-a", primeSessionFile: f.session } }).recover();
+  assert.equal(recovered?.commitDigest, latest.commitDigest);
+  assert.equal(recovered?.commit.generation, 24);
+});
+
+test("quota and free-space guards reject before publishing a partial generation", async () => {
+  const quota = await fixture({ maxStoreBytes: 1, minFreeBytes: 1 });
+  await assert.rejects(quota.store.publish(input([{ value: "no-space" }])), (error: unknown) =>
+    error instanceof Error && error.name === "DurablePublicationUnavailableError");
+  const fs = await import("node:fs/promises");
+  assert.deepEqual(await fs.readdir(join(quota.root, "heads")), []);
+  assert.deepEqual(await fs.readdir(join(quota.root, "commits")), []);
+  assert.deepEqual(await fs.readdir(join(quota.root, "objects")), []);
+});

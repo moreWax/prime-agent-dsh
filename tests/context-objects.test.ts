@@ -169,3 +169,29 @@ test("post-persistence sync derives effective references from the public Prime b
   const stored = JSON.parse(await readFile(join(second!.root, second!.manifest.snapshot), "utf8"));
   assert.deepEqual(stored.effectiveReferences.map((entry: { sourceIndex: number | null }) => entry.sourceIndex), [0, 1]);
 });
+
+
+test("ContextObjectStore bounds checkpoints and compatibility manifests across changing leaves", async () => {
+  const home = await mkdtemp(join(tmpdir(), "prime-dsh-bounded-"));
+  const sessions = join(home, "sessions"); await mkdir(sessions);
+  const sessionId = "bounded-session", sessionFile = join(sessions, `${sessionId}.jsonl`);
+  const branch: unknown[] = []; let leaf = "root";
+  await writeFile(sessionFile, "");
+  const ctx = primeContext(sessionId, sessionFile, branch, () => leaf);
+  const store = new ContextObjectStore();
+  let latest;
+  for (let index = 0; index < 16; index++) {
+    leaf = `m-${index}`;
+    branch.push({ type: "message", id: leaf, parentId: index ? `m-${index - 1}` : null, message: { role: "user", content: `message-${index}` } });
+    await writeFile(sessionFile, branch.map((value) => JSON.stringify(value)).join("\n") + "\n");
+    latest = await store.sync(ctx);
+  }
+  assert(latest);
+  const names = await (await import("node:fs/promises")).readdir(latest.root);
+  assert.ok(names.filter((name) => /^manifest-[a-f0-9]{64}-[a-f0-9]{64}\.json$/.test(name)).length <= 2);
+  assert.equal(names.filter((name) => /^manifest-[a-f0-9]{64}\.json$/.test(name)).length, 1);
+  for (const directory of ["heads", "commits", "objects"]) {
+    assert.ok((await (await import("node:fs/promises")).readdir(join(latest.root, directory))).length <= 2);
+  }
+  assert.equal(new ContextObjectStore().recover(ctx)?.commitDigest, latest.manifest.commit);
+});

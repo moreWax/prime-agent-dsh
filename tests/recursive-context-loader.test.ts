@@ -99,3 +99,70 @@ test("one scope fails open without disabling another scope", async () => {
   assert.equal(loader.status(good)?.errors, 0);
   assert.equal(loader.status(good)?.syncs, 2);
 });
+
+
+test("context publication is nonblocking, coalesces to latest, and never reuses the host context", async () => {
+  let release: (() => void) | undefined;
+  let call = 0;
+  const seen: Array<readonly unknown[]> = [];
+  const { handlers } = fixture(async (_ctx, messages) => {
+    call++;
+    seen.push(messages);
+    if (call === 2) await new Promise<void>((resolve) => { release = resolve; });
+    return undefined;
+  });
+  let stale = false;
+  const base = context("coalesced");
+  const guarded = new Proxy(base, { get(target, key, receiver) { if (stale) throw new Error("stale ExtensionContext accessed"); return Reflect.get(target, key, receiver); } });
+  await emit(handlers, "session_start", {}, guarded);
+  const first = emit(handlers, "context", { messages: [{ id: 1, role: "user" }] }, guarded);
+  await first;
+  for (let index = 2; index <= 40; index++) await emit(handlers, "context", { messages: [{ id: index, role: "user" }] }, guarded);
+  stale = true;
+  release?.();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(call, 3, "one in-flight publication plus one latest dirty publication");
+  assert.deepEqual((seen.at(-1)?.[0] as { id?: number }).id, 40);
+});
+
+test("a rebound scope ignores late completion from the old binding", async () => {
+  let release: (() => void) | undefined;
+  let calls = 0;
+  const { handlers, loader } = fixture(async () => {
+    calls++;
+    if (calls === 1) await new Promise<void>((resolve) => { release = resolve; });
+    return undefined;
+  });
+  const make = (cwd: string) => new Proxy({} as ExtensionContext, { get: (_target, key) => Reflect.get({
+    cwd, ui: { notify() {} }, sessionManager: { getSessionId: () => "same", getSessionFile: () => `/tmp/${cwd}.jsonl`, getBranch: () => [] },
+  }, key) });
+  const oldCtx = make("old"), nextCtx = make("new");
+  const oldStart = emit(handlers, "session_start", {}, oldCtx);
+  await new Promise((resolve) => setImmediate(resolve));
+  const nextStart = emit(handlers, "session_start", {}, nextCtx);
+  release?.();
+  await Promise.all([oldStart, nextStart]);
+  assert.equal(loader.status(nextCtx)?.bindingKey.includes("new.jsonl"), true);
+  await emit(handlers, "session_shutdown", {}, oldCtx);
+  assert(loader.status(nextCtx), "stale shutdown must not delete the rebound scope");
+});
+
+
+test("capacity refusal fails publication off until explicitly re-armed", async () => {
+  let calls = 0;
+  const { handlers, loader } = fixture(async () => {
+    calls++;
+    if (calls === 1) { const error = new Error("durable context quota exceeded"); error.name = "DurablePublicationUnavailableError"; throw error; }
+    return undefined;
+  });
+  const ctx = context("quota");
+  await emit(handlers, "session_start", {}, ctx);
+  assert.equal(loader.isEnabled(ctx), false);
+  await emit(handlers, "context", { messages: [] }, ctx);
+  await emit(handlers, "turn_end", {}, ctx);
+  assert.equal(calls, 1, "blocked scope must not retry on every lifecycle hook");
+  loader.setEnabled(ctx, true);
+  await emit(handlers, "turn_end", {}, ctx);
+  assert.equal(calls, 2);
+  assert.equal(loader.isEnabled(ctx), true);
+});

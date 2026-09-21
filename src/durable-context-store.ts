@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import {
   closeSync, constants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync,
-  realpathSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync,
+  realpathSync, readdirSync, renameSync, rmSync, statfsSync, statSync, unlinkSync, writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
@@ -99,11 +99,23 @@ export interface RecoveredGeneration {
 }
 export interface PublishResult extends RecoveredGeneration { readonly mode: "append" | "rebuild" | "noop"; readonly publication: PublicationDiagnostics }
 export type FaultBoundary = "object-durable" | "commit-durable" | "head-durable" | "current-temp-durable" | "current-replaced";
+
+export class DurablePublicationUnavailableError extends Error {
+  readonly code = "DURABLE_PUBLICATION_UNAVAILABLE";
+  constructor(message: string) { super(message); this.name = "DurablePublicationUnavailableError"; }
+}
+
 export interface DurableContextStoreOptions {
   readonly root: string;
   readonly binding: StoreBinding;
   readonly recoveryScanLimit?: number;
   readonly maxObjectBytes?: number;
+  /** Maximum bytes owned by the rebuildable derived store. */
+  readonly maxStoreBytes?: number;
+  /** Refuse a publication that would leave less filesystem space than this. */
+  readonly minFreeBytes?: number;
+  /** Complete generations retained after a successful publication. */
+  readonly retainGenerations?: number;
   readonly lockTimeoutMs?: number;
   readonly staleLockMs?: number;
   readonly fault?: (boundary: FaultBoundary) => void;
@@ -254,6 +266,9 @@ export class DurableContextStore {
   readonly bindingDigest: string;
   private readonly scanLimit: number;
   private readonly maxObjectBytes: number;
+  private readonly maxStoreBytes: number;
+  private readonly minFreeBytes: number;
+  private readonly retainGenerations: number;
   private readonly lockTimeout: number;
   private readonly staleLock: number;
   private readonly fault?: (boundary: FaultBoundary) => void;
@@ -273,10 +288,13 @@ export class DurableContextStore {
     this.bindingDigest = digest({ sessionId: this.binding.sessionId, primeSessionFile: sessionFile });
     this.scanLimit = options.recoveryScanLimit ?? 128;
     this.maxObjectBytes = options.maxObjectBytes ?? 16 * 1024 * 1024;
+    this.maxStoreBytes = options.maxStoreBytes ?? 64 * 1024 * 1024;
+    this.minFreeBytes = options.minFreeBytes ?? 128 * 1024 * 1024;
+    this.retainGenerations = options.retainGenerations ?? 2;
     this.lockTimeout = options.lockTimeoutMs ?? 10_000;
     this.staleLock = options.staleLockMs ?? 120_000;
     this.fault = options.fault; this.now = options.now ?? Date.now;
-    if (![this.scanLimit, this.maxObjectBytes, this.lockTimeout, this.staleLock].every((v) => Number.isSafeInteger(v) && v > 0)) throw new Error("store limits must be positive integers");
+    if (![this.scanLimit, this.maxObjectBytes, this.maxStoreBytes, this.minFreeBytes, this.retainGenerations, this.lockTimeout, this.staleLock].every((v) => Number.isSafeInteger(v) && v > 0)) throw new Error("store limits must be positive integers");
     this.initialize();
   }
 
@@ -324,7 +342,7 @@ export class DurableContextStore {
       rmSync(join(this.root, name), { recursive: true, force: true });
     }
     for (const name of requireDirectory(this.root)) {
-      if (name === "BINDING" || name === "CURRENT" || name === "index.json" || name === "index.sqlite"
+      if (name === "BINDING" || name === "CURRENT" || name === "GENERATION" || name === "index.json" || name === "index.sqlite"
         || name === "manifest.json" || /^manifest-[A-Za-z0-9._-]+\.json$/.test(name)) {
         rmSync(join(this.root, name), { recursive: true, force: true });
       }
@@ -439,7 +457,12 @@ export class DurableContextStore {
 
   async publish(input: PublishInput): Promise<PublishResult> {
     const release = await this.acquire();
-    try { this.cleanup(); return this.publishLocked(input); } finally { release(); }
+    try {
+      this.cleanup();
+      const current = this.recover();
+      if (current) this.pruneGenerations(current.commitDigest);
+      return this.publishLocked(input);
+    } finally { release(); }
   }
 
   private writeImmutable(path: string, contents: string, syncAfter = true): void {
@@ -466,7 +489,10 @@ export class DurableContextStore {
       && value.object.effectiveEntryDigests.every((item, index) => item === effectiveEntryDigests[index]);
     const ancestors = allRecovered.filter(isAncestor).sort((a, b) => b.object.sourceEntryDigests.length - a.object.sourceEntryDigests.length || b.commit.generation - a.commit.generation);
     const prior = ancestors[0] ?? allRecovered.find(value => value.object.compatibility.branchId === branchId);
-    const nextGeneration = Math.max(0, ...this.headGenerationNumbers()) + 1;
+    const highWaterPath = join(this.root, "GENERATION");
+    let highWater = 0;
+    try { const value = Number(safeFileText(highWaterPath, 128).trim()); if (Number.isSafeInteger(value) && value >= 0) highWater = value; } catch { /* migrate from pre-high-water stores */ }
+    const nextGeneration = Math.max(highWater, 0, ...this.headGenerationNumbers()) + 1;
     const same = prior && prior.commit.sourceDigest === sourceDigest && prior.commit.effectiveDigest === effectiveDigest
       && prior.commit.converterVersion === input.converterVersion && prior.commit.schemaVersion === input.schemaVersion
       && prior.object.compatibility.branchId === branchId;
@@ -540,7 +566,12 @@ export class DurableContextStore {
       },
     };
     const objectText = canonical(derived);
-    if (Buffer.byteLength(objectText, "utf8") > this.maxObjectBytes) throw new Error(`derived context object exceeds ${this.maxObjectBytes} bytes`);
+    const objectBytes = Buffer.byteLength(objectText, "utf8") + 1;
+    if (objectBytes > this.maxObjectBytes) throw new DurablePublicationUnavailableError(`derived context object exceeds ${this.maxObjectBytes} bytes`);
+    this.assertPublicationCapacity(objectBytes + 16 * 1024);
+    // Persist the allocation before any generation content. Gaps are safe and
+    // ensure cleanup/corruption can never cause a generation identity rewind.
+    atomicWrite(highWaterPath, `${nextGeneration}\n`, true);
     const objectDigest = createHash("sha256").update(objectText).digest("hex");
     this.writeImmutable(join(this.root, "objects", `${objectDigest}.json`), `${objectText}\n`); this.fault?.("object-durable");
     const commit: DerivedCommit = {
@@ -556,7 +587,82 @@ export class DurableContextStore {
     const generation = String(commit.generation).padStart(16, "0");
     this.writeImmutable(join(this.root, "heads", `${generation}-${commitDigest}`), `${commitDigest}\n`); this.fault?.("head-durable");
     atomicWrite(join(this.root, "CURRENT"), `${commitDigest}\n`, true, () => this.fault?.("current-temp-durable")); this.fault?.("current-replaced");
+    this.pruneGenerations(commitDigest);
     return { commitDigest, commit, object: derived, mode: commit.mode, publication };
+  }
+
+  private managedBytes(path = this.root): number {
+    let total = 0;
+    for (const name of requireDirectory(path)) {
+      if (name === "LOCK") continue;
+      const child = join(path, name);
+      const stat = lstatSync(child);
+      if (stat.isSymbolicLink()) throw new DurablePublicationUnavailableError(`symlink is not allowed in durable store: ${child}`);
+      if (stat.isDirectory()) total += this.managedBytes(child);
+      else if (stat.isFile()) total += stat.size;
+    }
+    return total;
+  }
+
+  private assertPublicationCapacity(candidateBytes: number): void {
+    const used = this.managedBytes();
+    if (used + candidateBytes > this.maxStoreBytes) {
+      throw new DurablePublicationUnavailableError(`durable context quota exceeded (${used + candidateBytes} > ${this.maxStoreBytes} bytes)`);
+    }
+    const fs = statfsSync(this.root);
+    const free = Number(fs.bavail) * Number(fs.bsize);
+    if (!Number.isFinite(free) || free - candidateBytes < this.minFreeBytes) {
+      throw new DurablePublicationUnavailableError(`durable context publication requires ${this.minFreeBytes} bytes free after write`);
+    }
+  }
+
+  /** Retire the oldest authoritative generations head-first. */
+  private pruneGenerations(currentDigest: string): void {
+    const heads = requireDirectory(join(this.root, "heads"))
+      .filter((name) => /^\d{16}-[a-f0-9]{64}$/.test(name)).sort().reverse();
+    const observedHighWater = heads.reduce((maximum, name) => Math.max(maximum, Number(name.slice(0, 16))), 0);
+    const highWaterPath = join(this.root, "GENERATION");
+    let recordedHighWater = 0;
+    try { recordedHighWater = Number(safeFileText(highWaterPath, 128).trim()) || 0; } catch { /* migration */ }
+    if (observedHighWater > recordedHighWater) atomicWrite(highWaterPath, `${observedHighWater}\n`, true);
+    const keep = new Set<string>([currentDigest]);
+    for (const name of heads) {
+      if (keep.size >= this.retainGenerations) break;
+      const digestValue = name.slice(17);
+      if (this.validate(digestValue)) keep.add(digestValue);
+    }
+    for (const name of heads) {
+      const digestValue = name.slice(17);
+      if (keep.has(digestValue)) continue;
+      try { unlinkSync(join(this.root, "heads", name)); } catch { /* best effort; retry next publication */ }
+    }
+    syncDirectory(join(this.root, "heads"));
+    const objects = new Set<string>();
+    for (const name of requireDirectory(join(this.root, "commits"))) {
+      const match = /^([a-f0-9]{64})\.json$/.exec(name);
+      if (!match) continue;
+      const commitDigest = match[1] ?? "";
+      const path = join(this.root, "commits", name);
+      if (!keep.has(commitDigest)) { try { unlinkSync(path); } catch { /* best effort */ } continue; }
+      try { const value = object(parseJson(path)); if (typeof value?.object === "string" && SHA256.test(value.object)) objects.add(value.object); } catch { /* retained corrupt commit has no object authority */ }
+    }
+    for (const name of requireDirectory(join(this.root, "objects"))) {
+      const match = /^([a-f0-9]{64})\.json$/.exec(name);
+      if (match && !objects.has(match[1] ?? "")) try { unlinkSync(join(this.root, "objects", name)); } catch { /* best effort */ }
+    }
+    syncDirectory(join(this.root, "commits")); syncDirectory(join(this.root, "objects"));
+    // Compatibility manifests are also rebuildable derived state. Retire only
+    // names from this store's strict manifest namespace.
+    for (const name of requireDirectory(this.root)) {
+      const immutable = /^manifest-[a-f0-9]{64}-([a-f0-9]{64})\.json$/.exec(name);
+      const branch = /^manifest-[a-f0-9]{64}\.json$/.exec(name);
+      let remove = !!immutable && !keep.has(immutable[1] ?? "");
+      if (branch) {
+        try { const value = object(parseJson(join(this.root, name))); remove = typeof value?.commit !== "string" || !keep.has(value.commit); }
+        catch { remove = true; }
+      }
+      if (remove) try { unlinkSync(join(this.root, name)); } catch { /* best effort */ }
+    }
   }
 
   private async acquire(): Promise<() => void> {
@@ -613,7 +719,9 @@ export class DurableContextStore {
       const path = join(this.root, "objects", name);
       try { if (lstatSync(path).mtimeMs < cutoff) unlinkSync(path); } catch { /* best effort */ }
     }
-    syncDirectory(join(this.root, "objects")); syncDirectory(join(this.root, "commits"));
+    const quarantine = requireDirectory(join(this.root, "quarantine")).sort().reverse();
+    for (const name of quarantine.slice(8)) try { rmSync(join(this.root, "quarantine", name), { recursive: true, force: true }); } catch { /* best effort */ }
+    syncDirectory(join(this.root, "objects")); syncDirectory(join(this.root, "commits")); syncDirectory(join(this.root, "quarantine"));
   }
 }
 

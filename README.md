@@ -157,7 +157,13 @@ session-artifacts/<session>/dsh-context/
   generations/<state>-<sha256>/ # immutable pin/payload/admission set
 ```
 
-Prime JSONL is the sole canonical history. Each lifecycle sync publishes a transactional, content-addressed generation. Recovery scans immutable heads and validates commits and objects; `CURRENT` and `manifest.json` are replaceable hints/views. A corrupt or interrupted publication therefore falls back to the newest valid generation. Append mode is used only after exact source and effective prefix proof; compaction, forks, and rewrites rebuild.
+Prime JSONL is the sole canonical history. Each lifecycle sync publishes a transactional, content-addressed generation. Recovery scans immutable heads and validates commits and objects; `CURRENT` and `manifest.json` are replaceable hints/views. A corrupt or interrupted publication therefore falls back to the newest valid retained generation. Append mode is used only after exact source and effective prefix proof; compaction, forks, and rewrites rebuild.
+
+Derived checkpoints are immutable while retained, but retention is bounded to the two newest valid generations. Old heads are retired before their commits, objects, and compatibility manifests. Explicit cursors to retired snapshots report that the snapshot is unavailable. User `artifacts/` and `grants/` are never collected. Publication also stops for that session when the 64 MiB derived-store quota or 128 MiB free-space reserve would be crossed. Prime continues normally. After freeing space, run `/dsh-session on` to re-arm publication.
+
+### Upgrade and restart
+
+No manual data migration is required. Install this version and restart Prime Agent. The first publication under the new process removes legacy rebuildable snapshot layouts and compacts old derived generations under the writer lock. Prime JSONL, user artifacts, grants, and inheritance data are not changed. Do not delete session directories manually.
 
 Directories use mode `0700`; files use mode `0600`. Object paths and digests are verified. Reads, search results, injected values, artifacts, and grants have hard size limits. Projection errors fail open and leave Prime's request unchanged.
 

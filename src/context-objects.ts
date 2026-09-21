@@ -1,4 +1,4 @@
-import { closeSync, chmodSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, chmodSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { dirname, join, sep } from "node:path";
 import { buildContextEntries, sessionEntryToContextMessages, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
@@ -224,10 +224,22 @@ export class ContextObjectStore {
     atomicPrivateWrite(join(root, `manifest-${branchKey}.json`), `${JSON.stringify(manifest)}\n`);
     // Current-view pointer only. Authoritative readers pass an immutable digest or expected branch.
     atomicPrivateWrite(join(root, "manifest.json"), `${JSON.stringify(manifest)}\n`);
+    this.pruneCompatibilityManifests(root, branchKey);
     return { manifest, root };
   }
 
 
+  private pruneCompatibilityManifests(root: string, currentBranchKey: string): void {
+    const retained = new Set(readdirSync(join(root, "heads"))
+      .flatMap((name) => /^\d{16}-([a-f0-9]{64})$/.exec(name)?.[1] ?? []));
+    for (const name of readdirSync(root)) {
+      const immutable = /^manifest-[a-f0-9]{64}-([a-f0-9]{64})\.json$/.exec(name);
+      const branch = /^manifest-([a-f0-9]{64})\.json$/.exec(name);
+      if ((immutable && !retained.has(immutable[1] ?? "")) || (branch && branch[1] !== currentBranchKey)) {
+        try { unlinkSync(join(root, name)); } catch { /* best effort; compatibility views are rebuildable */ }
+      }
+    }
+  }
 
   private binding(ctx: ExtensionContext): ConstructorParameters<typeof DurableContextStore>[0] | undefined {
     const sessionId = ctx.sessionManager.getSessionId?.() ?? "";
