@@ -170,7 +170,7 @@ export class ContextObjectStore {
       source: rawBranch,
       effective: canonical,
       effectiveSourceIndexes: effectiveSourceIndexes(rawBranch, messages),
-      converterVersion: "prime-to-dsh-v1",
+      converterVersion: "prime-to-dsh-v2-reference",
       schemaVersion: CONTEXT_OBJECT_VERSION,
       branchId,
       observedAt: Date.now(),
