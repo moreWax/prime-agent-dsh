@@ -39,6 +39,7 @@ export interface CompactionPlan {
 }
 
 export interface CompactionPlannerDiagnostics {
+  readonly mode: CompactionMode;
   readonly plans: number;
   readonly active: number;
   readonly failures: number;
@@ -159,8 +160,10 @@ export type PrimeCompactor = (event: SessionBeforeCompactEvent, ctx: ExtensionCo
 
 /** Registers exclusively on Prime's durable compaction seam; shadow mode never returns a mutation. */
 export class DurableCompactionController {
-  private state: CompactionPlannerDiagnostics = { plans: 0, active: 0, failures: 0 };
-  constructor(private readonly config: CompactionPlannerConfig, private readonly compact: PrimeCompactor) {}
+  private state: CompactionPlannerDiagnostics;
+  constructor(private readonly config: CompactionPlannerConfig, private readonly compact: PrimeCompactor) {
+    this.state = { mode: config.mode, plans: 0, active: 0, failures: 0 };
+  }
   diagnostics(): CompactionPlannerDiagnostics { return this.state; }
   register(pi: ExtensionAPI): void {
     if (this.config.mode === "off") return;
