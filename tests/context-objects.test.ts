@@ -104,7 +104,9 @@ test("context sync sanitizes runtime-only child task and tool result metadata", 
   const stored = JSON.parse(await readFile(join(synced.root, synced.manifest.snapshot), "utf8"));
   assert.equal(stored.version, "prime-agent-dsh/derived-object-v3-reference");
   assert.deepEqual(stored.sourceLocators, []);
-  assert.ok(stored.effectiveReferences.every((reference: { sourceIndex: number | null }) => reference.sourceIndex === null));
+  assert.deepEqual(stored.effectiveReferences, [], "uncommitted messages are deferred rather than copied");
+  assert.equal(synced.manifest.messageCount, 0);
+  assert.equal(synced.manifest.cropped, true);
   assert.equal((await (await import("node:fs/promises")).readdir(synced.root)).includes("bodies"), false);
   assert.equal(Object.isFrozen(taskDetails), false);
   assert.equal(Object.isFrozen(resultDetails), false);
@@ -140,7 +142,7 @@ test("restart repairs a corrupt compatibility manifest and Python reads the comm
 
 test("real ContextObjectStore survives a greater-than-2000 message restart, query, and spill lifecycle",async()=>{
  const home=await mkdtemp(join(tmpdir(),"prime-dsh-large-"));const sessions=join(home,"sessions");await mkdir(sessions);const sessionId="large-session",sessionFile=join(sessions,`${sessionId}.jsonl`);await writeFile(sessionFile,"");
- const branch:unknown[]=[],messages:unknown[]=[];for(let i=0;i<2101;i++){const content=i===2100?`needle-${i}-`+"🙂".repeat(40000):`message-${i}`;branch.push({type:"message",id:`m-${i}`,parentId:i?`m-${i-1}`:null,message:{role:"user",content}});messages.push({role:"user",content,timestamp:i});}
+ const branch:unknown[]=[],messages:unknown[]=[];for(let i=0;i<2101;i++){const content=i===2100?`needle-${i}-`+"🙂".repeat(40000):`message-${i}`;branch.push({type:"message",id:`m-${i}`,parentId:i?`m-${i-1}`:null,message:{role:"user",content}});messages.push((branch.at(-1) as {message:unknown}).message);}
  await writeFile(sessionFile,branch.map(value=>JSON.stringify(value)).join("\n")+"\n");
  const ctx=primeContext(sessionId,sessionFile,branch,()=>"m-2100");const first=await new ContextObjectStore().sync(ctx,messages);assert(first);assert.equal(first.manifest.messageCount,2101);assert.equal(first.manifest.cropped,false);
  const recovered=new ContextObjectStore().recover(ctx);assert.equal(recovered?.object.compatibility.messageCount,2101);

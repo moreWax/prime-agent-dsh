@@ -158,24 +158,31 @@ export class ContextObjectStore {
     const branchId = ctx.sessionManager.getLeafId?.() ?? "root";
     const rawBranch = (ctx.sessionManager.getBranch?.() ?? []) as readonly unknown[];
     const messages = inputMessages ?? this.sessionMessages(ctx);
-    const selectedMessages = messages;
-    const canonical = await Promise.all(selectedMessages.map((message, index) => primeToDshAsync(
+    const sourceIndexes = effectiveSourceIndexes(rawBranch, messages);
+    const selected = messages.flatMap((message, index) => {
+      const sourceIndex = sourceIndexes[index];
+      return sourceIndex === null || sourceIndex === undefined ? [] : [{ message, originalIndex: index, sourceIndex }];
+    });
+    // A context event can include the current user message before Prime commits
+    // it. Reference-only DSH indexes only confirmed Prime entries and catches up
+    // on the next lifecycle observation instead of copying pending content.
+    const canonical = await Promise.all(selected.map(({ message, originalIndex }) => primeToDshAsync(
       asPrimeInput(message),
       { admitImages: (images) => this.attachments.admitPrimeImages(images) },
-      `prime-${createHash("sha256").update(`${messages.length - selectedMessages.length + index}:`).update(stableJson(message)).digest("hex").slice(0, 32)}`,
+      `prime-${createHash("sha256").update(`${originalIndex}:`).update(stableJson(message)).digest("hex").slice(0, 32)}`,
     )));
     const metrics = metricsFromBranch(rawBranch);
     const store = new DurableContextStore(binding);
     const published = await store.publish({
       source: rawBranch,
       effective: canonical,
-      effectiveSourceIndexes: effectiveSourceIndexes(rawBranch, messages),
+      effectiveSourceIndexes: selected.map(({ sourceIndex }) => sourceIndex),
       converterVersion: "prime-to-dsh-v2-reference",
       schemaVersion: CONTEXT_OBJECT_VERSION,
       branchId,
       observedAt: Date.now(),
       compatibilityMetrics: { ...metrics },
-      cropped: selectedMessages.length !== messages.length,
+      cropped: selected.length !== messages.length,
     });
     const view = published.object.compatibility;
     const manifest: ContextObjectManifest = {
