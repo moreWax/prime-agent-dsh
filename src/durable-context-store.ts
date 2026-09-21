@@ -22,6 +22,8 @@ export interface PublishInput {
   readonly source: readonly unknown[];
   /** Exact converted records consumed by the derived context reader. */
   readonly effective: readonly unknown[];
+  /** Prime source entry for each effective message; null only when no public mapping exists. */
+  readonly effectiveSourceIndexes?: readonly (number | null)[];
   readonly converterVersion: string;
   readonly schemaVersion: string;
   readonly compatibilityMetrics?: Readonly<Record<string, number>>;
@@ -463,15 +465,23 @@ export class DurableContextStore {
     // V3 stores only verified references into Prime JSONL. Compatibility input is
     // deliberately ignored because it may contain cropped copies of secret text.
     const sourceLocators = locateSource(this.binding.primeSessionFile, source);
+    if (input.effectiveSourceIndexes && input.effectiveSourceIndexes.length !== effective.length) {
+      throw new Error("effective source index count does not match effective messages");
+    }
     const effectiveReferences: EffectiveReference[] = effective.map((entry, index) => {
-      let sourceIndex: number | null = null;
-      if (sourceEntryDigests[index] === effectiveEntryDigests[index]) sourceIndex = index;
-      else if (source.length === effective.length) {
-        const nested = object(source[index])?.message;
-        if (nested !== undefined && digest(nested) === effectiveEntryDigests[index]) sourceIndex = index;
-      } else {
-        const exact = sourceEntryDigests.indexOf(effectiveEntryDigests[index]);
-        if (exact >= 0) sourceIndex = exact;
+      let sourceIndex = input.effectiveSourceIndexes?.[index] ?? null;
+      if (sourceIndex !== null && (!Number.isSafeInteger(sourceIndex) || sourceIndex < 0 || sourceIndex >= source.length)) {
+        throw new Error(`invalid effective source index at ${index}`);
+      }
+      if (sourceIndex === null) {
+        if (sourceEntryDigests[index] === effectiveEntryDigests[index]) sourceIndex = index;
+        else if (source.length === effective.length) {
+          const nested = object(source[index])?.message;
+          if (nested !== undefined && digest(nested) === effectiveEntryDigests[index]) sourceIndex = index;
+        } else {
+          const exact = sourceEntryDigests.indexOf(effectiveEntryDigests[index]);
+          if (exact >= 0) sourceIndex = exact;
+        }
       }
       const role = object(entry)?.role;
       return { entryDigest: effectiveEntryDigests[index], sourceIndex, ...(typeof role === "string" ? { role } : {}) };

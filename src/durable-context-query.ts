@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, realpathSync, readdirSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
+import { sessionEntryToContextMessages, type SessionEntry } from "@earendil-works/pi-coding-agent";
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const COMMIT_VERSION = "prime-agent-dsh/derived-commit-v1";
@@ -161,9 +162,12 @@ export class DurableContextQuery {
         if (reference.sourceIndex === null) { effectiveExact.push(false); return null; }
         const entry = source[reference.sourceIndex as number]!;
         if (digest(entry) === expected) { effectiveExact.push(true); return entry; }
-        const message = obj(entry)?.message;
-        effectiveExact.push(message !== undefined && digest(message) === expected);
-        return (message === undefined ? entry : message) as Json;
+        const nested = obj(entry)?.message;
+        if (nested !== undefined && digest(nested) === expected) { effectiveExact.push(true); return nested as Json; }
+        const messages = sessionEntryToContextMessages(entry as unknown as SessionEntry);
+        const message = messages[0];
+        effectiveExact.push(false); // exact DSH conversion is intentionally not persisted
+        return message === undefined ? null : JSON.parse(canonical(message)) as Json;
       });
       if (compatibility.messageCount !== effective.length) throw new Error();
       values.push({ head, commitDigest, commit, object, branchId: compatibility.branchId, source, effective, effectiveExact });

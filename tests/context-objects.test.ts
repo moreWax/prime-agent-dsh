@@ -39,10 +39,7 @@ test("context objects mirror Prime without changing its messages", async () => {
   ];
   await writeFile(sessionFile, branch.map(value => JSON.stringify(value)).join("\n") + "\n");
   const ctx = primeContext(sessionId, sessionFile, branch, () => leaf);
-  const messages: unknown[] = [
-    { role: "user", content: "alpha", timestamp: 1 },
-    { role: "assistant", content: [{ type: "text", text: "beta" }], provider: "p", model: "m", timestamp: 2 },
-  ];
+  const messages: unknown[] = branch.map((entry) => (entry as { message: unknown }).message);
   const store = new ContextObjectStore();
 
   const first = await store.sync(ctx, messages);
@@ -64,7 +61,7 @@ test("context objects mirror Prime without changing its messages", async () => {
   leaf = "user-2";
   branch.push({ type: "message", id: leaf, parentId: "assistant-1", message: { role: "user", content: "gamma" } });
   await writeFile(sessionFile, branch.map(value => JSON.stringify(value)).join("\n") + "\n");
-  messages.push({ role: "user", content: "gamma", timestamp: 3 });
+  messages.push((branch.at(-1) as { message: unknown }).message);
   const appended = await store.sync(ctx, messages);
   assert(appended);
   assert.equal(appended.manifest.syncMode, "append");
@@ -80,6 +77,7 @@ test("context objects mirror Prime without changing its messages", async () => {
   assert.equal(stored.effective, undefined);
   assert.equal(stored.effectiveEntryDigests.length, 3);
   assert.deepEqual(stored.sourceLocators.map((entry: { entryId?: string }) => entry.entryId), ["user-1", "assistant-1", "user-2"]);
+  assert.deepEqual(stored.effectiveReferences.map((entry: { sourceIndex: number | null }) => entry.sourceIndex), [0, 1, 2]);
   assert.deepEqual(snapshot.entries, []);
 });
 

@@ -1,7 +1,7 @@
 import { closeSync, chmodSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, renameSync, writeFileSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { dirname, join, sep } from "node:path";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { sessionEntryToContextMessages, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { primeToDshAsync, type PrimeEnvelope, type PrimeMessage } from "./context-converter.js";
 import { DurableContextStore, type PublishResult } from "./durable-context-store.js";
 import { stableJson } from "./prefix-metrics.js";
@@ -104,6 +104,26 @@ function atomicPrivateWrite(path: string, content: string): void {
   finally { if (directory !== undefined) closeSync(directory); }
 }
 
+function effectiveSourceIndexes(rawBranch: readonly unknown[], messages: readonly unknown[]): Array<number | null> {
+  const candidates: Array<{ sourceIndex: number; fingerprint: string }> = [];
+  rawBranch.forEach((entry, sourceIndex) => {
+    try {
+      for (const message of sessionEntryToContextMessages(entry as SessionEntry)) {
+        candidates.push({ sourceIndex, fingerprint: stableJson(message) });
+      }
+    } catch { /* unsupported/log-only entries do not enter model context */ }
+  });
+  let cursor = 0;
+  return messages.map((message) => {
+    const fingerprint = stableJson(message);
+    let found = candidates.findIndex((candidate, index) => index >= cursor && candidate.fingerprint === fingerprint);
+    if (found < 0) found = candidates.findIndex((candidate) => candidate.fingerprint === fingerprint);
+    if (found < 0) return null;
+    cursor = found + 1;
+    return candidates[found]?.sourceIndex ?? null;
+  });
+}
+
 /** Resolve the artifact directory shared with Prime's per-session Python kernel. */
 export function contextObjectRoot(sessionId: string, sessionFile: string | undefined): string | undefined {
   if (!sessionFile || !/^[A-Za-z0-9._-]{1,128}$/.test(sessionId)) return undefined;
@@ -149,6 +169,7 @@ export class ContextObjectStore {
     const published = await store.publish({
       source: rawBranch,
       effective: canonical,
+      effectiveSourceIndexes: effectiveSourceIndexes(rawBranch, messages),
       converterVersion: "prime-to-dsh-v1",
       schemaVersion: CONTEXT_OBJECT_VERSION,
       branchId,

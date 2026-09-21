@@ -372,8 +372,19 @@ class ContextHandle:
         effective_digests = stored.get("effectiveEntryDigests")
         if not isinstance(refs, list) or not isinstance(effective_digests, list) or len(refs) != len(effective_digests):
             raise RuntimeError("invalid DSH effective references")
+        def context_message(entry: Any) -> dict[str, Any] | None:
+            if not isinstance(entry, dict): return None
+            kind = entry.get("type")
+            if kind == "message" and isinstance(entry.get("message"), dict): return dict(entry["message"])
+            if kind == "custom_message":
+                return {"role": "custom", "customType": entry.get("customType", ""), "content": entry.get("content", []),
+                        "display": entry.get("display", False), "details": entry.get("details"), "timestamp": entry.get("timestamp")}
+            if kind == "branch_summary" and isinstance(entry.get("summary"), str):
+                return {"role": "branchSummary", "summary": entry["summary"], "fromId": entry.get("fromId"), "timestamp": entry.get("timestamp")}
+            if kind == "compaction" and isinstance(entry.get("summary"), str):
+                return {"role": "compactionSummary", "summary": entry["summary"], "tokensBefore": entry.get("tokensBefore", 0), "timestamp": entry.get("timestamp")}
+            return None
         messages: list[Any] = []
-        effective_values: list[Any] = []
         unavailable = 0
         for reference, expected_digest in zip(refs, effective_digests):
             if (not isinstance(expected_digest, str) or not re.fullmatch(r"[a-f0-9]{64}", expected_digest)
@@ -385,17 +396,14 @@ class ContextHandle:
                 continue
             if not isinstance(source_index, int) or isinstance(source_index, bool) or not 0 <= source_index < len(source):
                 raise RuntimeError("invalid DSH effective source index")
-            entry = source[source_index]
-            message = entry.get("message", entry) if isinstance(entry, dict) else entry
-            if not isinstance(message, dict) or sha256(_canonical_json(message)).hexdigest() != expected_digest:
-                raise RuntimeError("DSH effective reference digest mismatch")
-            effective_values.append(message)
+            message = context_message(source[source_index])
+            if message is None:
+                unavailable += 1
+                continue
             rendered = dict(message)
             if isinstance(rendered.get("content"), str):
                 rendered["content"] = [{"type": "text", "text": rendered["content"]}]
             messages.append(rendered)
-        if unavailable == 0 and sha256(_canonical_json(effective_values)).hexdigest() != stored.get("effectiveDigest"):
-            raise RuntimeError("DSH effective aggregate digest mismatch")
         def entry_text(value: Any) -> str:
             if isinstance(value, dict):
                 message = value.get("message")
