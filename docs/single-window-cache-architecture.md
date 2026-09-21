@@ -104,4 +104,4 @@ A 99% rate is a workload/provider outcome, not a package guarantee. The release 
 3. Chunked append-only durable store with unified validation.
 4. Cache-friendly auxiliary compaction request in shadow evaluation.
 5. Opt-in active compaction after replay, recovery, cache, and provenance gates pass.
-6. Any Jev selection remains shadow-only until it can preserve stable epochs; query-dependent per-turn reshuffling is prohibited.
+6. Probability-threshold per-tool deletion is out of scope; query-dependent per-turn reshuffling is prohibited.
