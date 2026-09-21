@@ -1,9 +1,10 @@
 import { closeSync, chmodSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, renameSync, writeFileSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { dirname, join, sep } from "node:path";
-import { sessionEntryToContextMessages, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import { buildContextEntries, sessionEntryToContextMessages, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { primeToDshAsync, type PrimeEnvelope, type PrimeMessage } from "./context-converter.js";
-import { DurableContextStore, type PublishResult } from "./durable-context-store.js";
+import { DurableContextStore, type PublicationDiagnostics, type PublishResult } from "./durable-context-store.js";
+import { cacheEpochFromBranch, type CacheEpochDiagnostics } from "./cache-epoch-diagnostics.js";
 import { stableJson } from "./prefix-metrics.js";
 import { LocalDshImageAttachments, type DshImageAttachmentGateway } from "./dsh-image-attachments.js";
 
@@ -39,6 +40,8 @@ export interface ContextObjectManifest {
   readonly commit?: string;
   readonly sourceDigest?: string;
   readonly effectiveDigest?: string;
+  readonly publication?: PublicationDiagnostics;
+  readonly cacheEpoch?: CacheEpochDiagnostics;
 }
 
 export interface ContextObjectSyncResult {
@@ -147,7 +150,13 @@ export class ContextObjectStore {
     const binding = this.binding(ctx);
     if (!binding) return undefined;
     const recovered = new DurableContextStore(binding).recover();
-    return recovered ? { ...recovered, mode: "noop" } : undefined;
+    if (!recovered) return undefined;
+    const publication = recovered.commit.publication ?? {
+      source: { mode: "noop" as const, reused: recovered.object.sourceEntryDigests.length, new: 0, reindexed: 0 },
+      effective: { reused: recovered.object.effectiveEntryDigests.length, new: 0, reindexed: 0, rebuildReason: "none" as const },
+      compactionBoundaryChanged: false, alertUnchangedSourceReindexed: false,
+    };
+    return { ...recovered, mode: "noop", publication };
   }
 
   async sync(ctx: ExtensionContext, inputMessages?: readonly unknown[]): Promise<ContextObjectSyncResult | undefined> {
@@ -157,7 +166,10 @@ export class ContextObjectStore {
     const { root } = binding;
     const branchId = ctx.sessionManager.getLeafId?.() ?? "root";
     const rawBranch = (ctx.sessionManager.getBranch?.() ?? []) as readonly unknown[];
-    const messages = inputMessages ?? this.sessionMessages(ctx);
+    // ReadonlySessionManager has no buildSessionContext() at runtime. Rebuild the
+    // confirmed public context from its durable branch after persistence.
+    const messages = inputMessages ?? buildContextEntries(rawBranch as SessionEntry[], branchId)
+      .flatMap((entry) => sessionEntryToContextMessages(entry));
     const sourceIndexes = effectiveSourceIndexes(rawBranch, messages);
     const selected = messages.flatMap((message, index) => {
       const sourceIndex = sourceIndexes[index];
@@ -202,6 +214,8 @@ export class ContextObjectStore {
       commit: published.commitDigest,
       sourceDigest: published.commit.sourceDigest,
       effectiveDigest: published.commit.effectiveDigest,
+      publication: published.publication,
+      cacheEpoch: cacheEpochFromBranch(sessionId, rawBranch),
     };
     ensurePrivateDirectory(root);
     const branchKey = createHash("sha256").update(branchId).digest("hex");
@@ -213,15 +227,7 @@ export class ContextObjectStore {
     return { manifest, root };
   }
 
-  private sessionMessages(ctx: ExtensionContext): readonly unknown[] {
-    const manager = ctx.sessionManager as typeof ctx.sessionManager & { buildSessionContext?: () => { messages?: readonly unknown[] } };
-    try {
-      const built = manager.buildSessionContext?.();
-      return Array.isArray(built?.messages) ? built.messages : [];
-    } catch {
-      return [];
-    }
-  }
+
 
   private binding(ctx: ExtensionContext): ConstructorParameters<typeof DurableContextStore>[0] | undefined {
     const sessionId = ctx.sessionManager.getSessionId?.() ?? "";

@@ -43,6 +43,12 @@ export interface CompactionPlannerDiagnostics {
   readonly active: number;
   readonly failures: number;
   readonly lastPlan?: CompactionPlan;
+  readonly lastCompaction?: {
+    readonly inputTokens?: number;
+    readonly cacheReadTokens?: number;
+    readonly cacheWriteTokens?: number;
+    readonly cacheEpochId?: string;
+  };
   readonly lastError?: string;
 }
 
@@ -171,7 +177,14 @@ export class DurableCompactionController {
           || (compaction.estimatedTokensAfter !== undefined && (!Number.isFinite(compaction.estimatedTokensAfter) || compaction.estimatedTokensAfter < 0))) {
           throw new Error("Prime compactor returned an invalid or mismatched durable cut");
         }
-        this.state = { ...this.state, active: this.state.active + 1 };
+        const usage = compaction.usage as { input?: number; cacheRead?: number; cacheWrite?: number } | undefined;
+        const details = compaction.details as { cacheEpochId?: unknown } | undefined;
+        this.state = { ...this.state, active: this.state.active + 1, lastCompaction: {
+          ...(typeof usage?.input === "number" ? { inputTokens: usage.input } : {}),
+          ...(typeof usage?.cacheRead === "number" ? { cacheReadTokens: usage.cacheRead } : {}),
+          ...(typeof usage?.cacheWrite === "number" ? { cacheWriteTokens: usage.cacheWrite } : {}),
+          ...(typeof details?.cacheEpochId === "string" ? { cacheEpochId: details.cacheEpochId } : {}),
+        } };
         return { compaction };
       } catch (error) {
         this.state = { ...this.state, failures: this.state.failures + 1, lastError: error instanceof Error ? error.message : String(error) };

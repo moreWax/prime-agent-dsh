@@ -1,7 +1,8 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { buildContextEntries, sessionEntryToContextMessages, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ContextObjectStore, type ContextObjectSyncResult } from "./context-objects.js";
 import { classifyTokenPressure, measureSessionTokens, type PressureLevel, type SessionTokenBreakdown } from "./context-pressure.js";
 import { ProviderCacheSeries, type ProviderCacheAggregate } from "./provider-cache-series.js";
+import type { CacheEpochDiagnostics } from "./cache-epoch-diagnostics.js";
 
 const number = (value: unknown): number | undefined => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 
@@ -17,6 +18,7 @@ export interface SessionContextScope {
   errors: number;
   pressure?: { readonly level: PressureLevel; readonly measurement: SessionTokenBreakdown; readonly contextWindow: number };
   cache?: ProviderCacheAggregate;
+  cacheEpoch?: CacheEpochDiagnostics;
   pendingSync?: TimerHandle;
 }
 
@@ -93,7 +95,13 @@ export class RecursiveContextLoader {
       const observed = messages ?? this.sessionMessages(ctx);
       this.measureRuntime(ctx, scope, observed);
       const synced = await this.store.sync(ctx, messages);
-      if (synced) scope.lastSync = synced;
+      if (synced) {
+        scope.lastSync = synced;
+        scope.cacheEpoch = synced.manifest.cacheEpoch;
+        if (synced.manifest.publication?.alertUnchangedSourceReindexed) {
+          ctx.ui?.notify?.("DSH cache alert: compaction reindexed unchanged Prime source entries; provider cache may reset. Prime history was not duplicated or retokenized.", "warning");
+        }
+      }
       scope.lastError = undefined;
       scope.syncs++;
     } catch (error) {
@@ -105,9 +113,10 @@ export class RecursiveContextLoader {
   }
 
   private sessionMessages(ctx: ExtensionContext): readonly unknown[] {
-    const manager = ctx.sessionManager as typeof ctx.sessionManager & { buildSessionContext?: () => { messages?: readonly unknown[] } };
-    try { const built = manager.buildSessionContext?.(); return Array.isArray(built?.messages) ? built.messages : []; }
-    catch { return []; }
+    try {
+      const branch = ctx.sessionManager.getBranch?.() ?? [];
+      return buildContextEntries(branch, ctx.sessionManager.getLeafId?.()).flatMap((entry) => sessionEntryToContextMessages(entry));
+    } catch { return []; }
   }
 
   /** Rebuild on every native context event, so retries/replays never double count. */

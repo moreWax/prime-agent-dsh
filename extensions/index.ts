@@ -100,9 +100,12 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
         const scope = contextLoader.status(ctx);
         const latest = scope?.lastSync?.manifest;
         const selected = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "none";
+        const epoch = scope?.cacheEpoch ?? latest?.cacheEpoch;
+        const publication = latest?.publication;
+        const compaction = compactionController.diagnostics();
         ctx.ui.notify(
-          `DSH context: enabled=${contextLoader.isEnabled(ctx)}, inheritance=${inheritance.status(ctx).state}, loop=Prime, model=${selected}, syncs=${scope?.syncs ?? 0}, errors=${scope?.errors ?? 0}, revision=${latest?.revision ?? 0}, entries=${latest?.entryCount ?? 0}, cacheRead=${latest?.metrics.cacheReadTokens ?? 0}, cacheWrite=${latest?.metrics.cacheWriteTokens ?? 0}`,
-          scope?.lastError ? "warning" : "info",
+          `DSH context: enabled=${contextLoader.isEnabled(ctx)}, inheritance=${inheritance.status(ctx).state}, loop=Prime, model=${selected}, syncs=${scope?.syncs ?? 0}, errors=${scope?.errors ?? 0}, revision=${latest?.revision ?? 0}, entries=${latest?.entryCount ?? 0}, cacheEpoch=${epoch?.epochId.slice(0, 12) ?? "pending"}, summaryCache=${epoch?.summaryRequest?.cacheReadTokens ?? "unreported"}/${epoch?.summaryRequest?.cacheWriteTokens ?? "unreported"}, firstAfterCompaction=${epoch?.firstAfterCompaction?.cacheReadTokens ?? "pending"}, stableSamples=${epoch?.stableSampleCount ?? 0}, source=${publication ? `${publication.source.mode}:${publication.source.reused}/${publication.source.new}/${publication.source.reindexed}` : "pending"}, effectiveReason=${publication?.effective.rebuildReason ?? "pending"}, compactions=${compaction.active}/${compaction.plans}, cacheRead=${latest?.metrics.cacheReadTokens ?? 0}, cacheWrite=${latest?.metrics.cacheWriteTokens ?? 0}`,
+          scope?.lastError || publication?.alertUnchangedSourceReindexed ? "warning" : "info",
         );
         return;
       }

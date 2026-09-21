@@ -73,6 +73,8 @@ test("warm-prefix compaction replays Prime messages and envelope before one trai
   assert.equal(result.firstKeptEntryId, "keep");
   assert.equal(result.usage?.cacheRead, 900);
   assert.equal(result.details?.engine, "dsh-warm-prefix-v1");
+  assert.match(result.details?.cacheEpochId ?? "", /^[a-f0-9]{64}$/);
+  assert.deepEqual(result.details?.summaryRequest, { inputTokens: 100, cacheReadTokens: 900, cacheWriteTokens: 0 });
 });
 
 test("warm-prefix compaction rejects incomplete output and tool calls", async () => {

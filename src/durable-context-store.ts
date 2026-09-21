@@ -70,6 +70,13 @@ export interface DerivedObject {
   readonly effectiveReferences: readonly EffectiveReference[];
   readonly compatibility: CompatibilityView;
 }
+export type EffectiveProjectionRebuildReason = "initial" | "none" | "converter-change" | "source-diverged" | "source-append-effective-projection-change" | "effective-diverged";
+export interface PublicationDiagnostics {
+  readonly source: { readonly mode: "append" | "rebuild" | "noop"; readonly reused: number; readonly new: number; readonly reindexed: number };
+  readonly effective: { readonly reused: number; readonly new: number; readonly reindexed: number; readonly rebuildReason: EffectiveProjectionRebuildReason };
+  readonly compactionBoundaryChanged: boolean;
+  readonly alertUnchangedSourceReindexed: boolean;
+}
 export interface DerivedCommit {
   readonly version: typeof DURABLE_COMMIT_VERSION;
   readonly bindingDigest: string;
@@ -83,13 +90,14 @@ export interface DerivedCommit {
   readonly mode: "append" | "rebuild";
   readonly commonPrefix: number;
   readonly observedAt: number;
+  readonly publication?: PublicationDiagnostics;
 }
 export interface RecoveredGeneration {
   readonly commitDigest: string;
   readonly commit: DerivedCommit;
   readonly object: DerivedObject;
 }
-export interface PublishResult extends RecoveredGeneration { readonly mode: "append" | "rebuild" | "noop" }
+export interface PublishResult extends RecoveredGeneration { readonly mode: "append" | "rebuild" | "noop"; readonly publication: PublicationDiagnostics }
 export type FaultBoundary = "object-durable" | "commit-durable" | "head-durable" | "current-temp-durable" | "current-replaced";
 export interface DurableContextStoreOptions {
   readonly root: string;
@@ -227,6 +235,19 @@ function locateSource(path: string, source: readonly Json[]): SourceLocator[] {
 }
 
 /** A rebuildable, content-addressed publication store. Prime's JSONL remains authoritative. */
+function reuseCounts(previous: readonly string[], next: readonly string[]): { reused: number; new: number; reindexed: number } {
+  const remaining = new Map<string, number[]>();
+  previous.forEach((value, index) => { const indexes = remaining.get(value) ?? []; indexes.push(index); remaining.set(value, indexes); });
+  let reused = 0, added = 0, reindexed = 0;
+  next.forEach((value, index) => {
+    const indexes = remaining.get(value);
+    if (!indexes?.length) { added++; return; }
+    const same = indexes.indexOf(index);
+    if (same >= 0) { indexes.splice(same, 1); reused++; } else { indexes.shift(); reindexed++; }
+  });
+  return { reused, new: added, reindexed };
+}
+
 export class DurableContextStore {
   readonly root: string;
   readonly binding: Readonly<StoreBinding & { primeSessionFile: string }>;
@@ -449,7 +470,11 @@ export class DurableContextStore {
     const same = prior && prior.commit.sourceDigest === sourceDigest && prior.commit.effectiveDigest === effectiveDigest
       && prior.commit.converterVersion === input.converterVersion && prior.commit.schemaVersion === input.schemaVersion
       && prior.object.compatibility.branchId === branchId;
-    if (same) return { ...prior, mode: "noop" };
+    if (same) return { ...prior, mode: "noop", publication: {
+      source: { mode: "noop", reused: sourceEntryDigests.length, new: 0, reindexed: 0 },
+      effective: { reused: effectiveEntryDigests.length, new: 0, reindexed: 0, rebuildReason: "none" },
+      compactionBoundaryChanged: false, alertUnchangedSourceReindexed: false,
+    } };
     let prefix = 0;
     if (prior && prior.commit.converterVersion === input.converterVersion && prior.commit.schemaVersion === input.schemaVersion) {
       const old = prior.object.sourceEntryDigests;
@@ -460,8 +485,23 @@ export class DurableContextStore {
       const oldEffective = prior.object.effectiveEntryDigests;
       while (effectivePrefix < oldEffective.length && effectivePrefix < effectiveEntryDigests.length && oldEffective[effectivePrefix] === effectiveEntryDigests[effectivePrefix]) effectivePrefix++;
     }
-    const append = !!prior && prefix === prior.object.sourceEntryDigests.length && sourceEntryDigests.length > prefix
-      && effectivePrefix === prior.object.effectiveEntryDigests.length;
+    const sourceAppend = !!prior && prefix === prior.object.sourceEntryDigests.length && sourceEntryDigests.length > prefix;
+    const append = sourceAppend && effectivePrefix === prior.object.effectiveEntryDigests.length;
+    const sourceCounts = reuseCounts(prior?.object.sourceEntryDigests ?? [], sourceEntryDigests);
+    const effectiveCounts = reuseCounts(prior?.object.effectiveEntryDigests ?? [], effectiveEntryDigests);
+    // A compaction boundary is newly observed when it occurs after the unchanged
+    // source prefix. No content is retained in this diagnostic.
+    const appendedCompaction = source.slice(prefix).some((value) => value && !Array.isArray(value) && typeof value === "object" && (value as { type?: unknown }).type === "compaction");
+    const effectiveReason: EffectiveProjectionRebuildReason = !prior ? "initial"
+      : prior.commit.converterVersion !== input.converterVersion || prior.commit.schemaVersion !== input.schemaVersion ? "converter-change"
+      : prefix < prior.object.sourceEntryDigests.length ? "source-diverged"
+      : sourceAppend && effectivePrefix < prior.object.effectiveEntryDigests.length ? "source-append-effective-projection-change"
+      : effectivePrefix < prior.object.effectiveEntryDigests.length ? "effective-diverged" : "none";
+    const publication: PublicationDiagnostics = {
+      source: { mode: sourceAppend ? "append" : "rebuild", ...sourceCounts }, effective: { ...effectiveCounts, rebuildReason: effectiveReason },
+      compactionBoundaryChanged: appendedCompaction,
+      alertUnchangedSourceReindexed: appendedCompaction && sourceCounts.reindexed > 0,
+    };
     // V3 stores only verified references into Prime JSONL. Compatibility input is
     // deliberately ignored because it may contain cropped copies of secret text.
     const sourceLocators = locateSource(this.binding.primeSessionFile, source);
@@ -507,7 +547,7 @@ export class DurableContextStore {
       version: DURABLE_COMMIT_VERSION, bindingDigest: this.bindingDigest, generation: nextGeneration,
       parent: prior?.commitDigest ?? null, object: objectDigest, sourceDigest, effectiveDigest,
       converterVersion: input.converterVersion, schemaVersion: input.schemaVersion, mode: append ? "append" : "rebuild",
-      commonPrefix: prefix, observedAt: input.observedAt ?? 0,
+      commonPrefix: prefix, observedAt: input.observedAt ?? 0, publication,
     };
     const commitText = canonical(commit), commitDigest = createHash("sha256").update(commitText).digest("hex");
     this.writeImmutable(join(this.root, "commits", `${commitDigest}.json`), `${commitText}\n`); this.fault?.("commit-durable");
@@ -516,7 +556,7 @@ export class DurableContextStore {
     const generation = String(commit.generation).padStart(16, "0");
     this.writeImmutable(join(this.root, "heads", `${generation}-${commitDigest}`), `${commitDigest}\n`); this.fault?.("head-durable");
     atomicWrite(join(this.root, "CURRENT"), `${commitDigest}\n`, true, () => this.fault?.("current-temp-durable")); this.fault?.("current-replaced");
-    return { commitDigest, commit, object: derived, mode: commit.mode };
+    return { commitDigest, commit, object: derived, mode: commit.mode, publication };
   }
 
   private async acquire(): Promise<() => void> {

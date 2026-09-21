@@ -149,3 +149,23 @@ test("real ContextObjectStore survives a greater-than-2000 message restart, quer
  const query=new DurableContextQuery({root:first.root,sessionId,primeSessionFile:sessionFile});const hits=query.query({query:"needle-2100",scope:"source",limit:2});assert.equal(hits.hits.length,1);assert.equal(hits.hits[0]?.trace.entryIndex,2100);
  assert.deepEqual(recovered?.object.compatibility.entries,[]);assert.equal((await (await import("node:fs/promises")).readdir(first.root)).includes("bodies"),false);
 });
+
+
+test("post-persistence sync derives effective references from the public Prime branch", async () => {
+  const home = await mkdtemp(join(tmpdir(), "prime-dsh-post-persist-"));
+  const sessions = join(home, "sessions"); await mkdir(sessions);
+  const sessionId = "post-persist", sessionFile = join(sessions, `${sessionId}.jsonl`);
+  const branch: unknown[] = [{ type: "message", id: "u1", parentId: null, message: { role: "user", content: "confirmed" } }];
+  await writeFile(sessionFile, branch.map((value) => JSON.stringify(value)).join("\n") + "\n");
+  let leaf = "u1";
+  const ctx = primeContext(sessionId, sessionFile, branch, () => leaf);
+  const first = await new ContextObjectStore().sync(ctx);
+  assert.equal(first?.manifest.entryCount, 1); assert.equal(first?.manifest.messageCount, 1);
+  branch.push({ type: "message", id: "a1", parentId: "u1", message: { role: "assistant", content: [{ type: "text", text: "persisted" }], provider: "p", model: "m", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2 }, stopReason: "stop", timestamp: 2 } });
+  await writeFile(sessionFile, branch.map((value) => JSON.stringify(value)).join("\n") + "\n");
+  leaf = "a1";
+  const second = await new ContextObjectStore().sync(ctx);
+  assert.equal(second?.manifest.entryCount, 2); assert.equal(second?.manifest.messageCount, 2);
+  const stored = JSON.parse(await readFile(join(second!.root, second!.manifest.snapshot), "utf8"));
+  assert.deepEqual(stored.effectiveReferences.map((entry: { sourceIndex: number | null }) => entry.sourceIndex), [0, 1]);
+});

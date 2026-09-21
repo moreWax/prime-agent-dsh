@@ -239,3 +239,25 @@ test("old derived schemas reset only cache-owned state and rebuild from Prime", 
     assert.equal(store.recover()?.commitDigest, rebuilt.commitDigest);
   });
 });
+
+
+test("compaction appends Prime source while effective projection rebuilds separately", async () => {
+  const { store } = await fixture();
+  const a = { type: "message", id: "a" }, b = { type: "message", id: "b" };
+  await store.publish(input([a, b], [{ role: "user", id: "ea" }, { role: "assistant", id: "eb" }]));
+  const compacted = await store.publish(input([a, b, { type: "compaction", id: "c" }], [{ role: "compactionSummary", id: "summary" }]));
+  assert.equal(compacted.mode, "rebuild");
+  assert.deepEqual(compacted.publication.source, { mode: "append", reused: 2, new: 1, reindexed: 0 });
+  assert.equal(compacted.publication.effective.rebuildReason, "source-append-effective-projection-change");
+  assert.equal(compacted.publication.compactionBoundaryChanged, true);
+  assert.equal(compacted.publication.alertUnchangedSourceReindexed, false);
+});
+
+test("compaction alerts when unchanged Prime source entries are reindexed", async () => {
+  const { store } = await fixture();
+  const a = { type: "message", id: "a" }, b = { type: "message", id: "b" };
+  await store.publish(input([a, b]));
+  const bad = await store.publish(input([b, { type: "compaction", id: "c" }]));
+  assert.equal(bad.publication.source.reindexed, 1);
+  assert.equal(bad.publication.alertUnchangedSourceReindexed, true);
+});

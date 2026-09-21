@@ -67,13 +67,15 @@ test("off registers no seam; shadow plans but cannot mutate", async () => {
 });
 
 test("active returns a CompactionResult only through session_before_compact and fails open", async () => {
-  const pi = new FakePi(); const expected = { summary: "ok", firstKeptEntryId: "keep", tokensBefore: 1000 } as any;
+  const pi = new FakePi(); const expected = { summary: "ok", firstKeptEntryId: "keep", tokensBefore: 1000,
+    usage: { input: 11, cacheRead: 22, cacheWrite: 33 }, details: { cacheEpochId: "e".repeat(64) } } as any;
   const controller = new DurableCompactionController({ mode: "active", pruning: resolvePrunePolicy() }, async (_e, _c, plan) => {
     assert.equal(plan.pruned.length, 1); return expected;
   });
   controller.register(pi as any);
   assert.deepEqual(await pi.handlers.session_before_compact!(event([tool("x".repeat(9000))]), ctx), { compaction: expected });
   assert.equal(controller.diagnostics().active, 1);
+  assert.deepEqual(controller.diagnostics().lastCompaction, { inputTokens: 11, cacheReadTokens: 22, cacheWriteTokens: 33, cacheEpochId: "e".repeat(64) });
   const broken = new FakePi();
   new DurableCompactionController({ mode: "active", pruning: resolvePrunePolicy() }, async () => { throw new Error("down"); }).register(broken as any);
   assert.equal(await broken.handlers.session_before_compact!(event([]), ctx), undefined);

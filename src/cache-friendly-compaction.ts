@@ -16,6 +16,13 @@ export interface CacheFriendlyCompactionDetails {
   readonly prefixMessages: number;
   readonly activeTools: number;
   readonly sourceFirstKeptEntryId: string;
+  /** Durable, content-free boundary identity for the provider cache epoch. */
+  readonly cacheEpochId: string;
+  readonly summaryRequest: {
+    readonly inputTokens: number;
+    readonly cacheReadTokens: number;
+    readonly cacheWriteTokens: number;
+  };
 }
 
 export type CompleteSummary = (model: Model<Api>, context: Context, options: SimpleStreamOptions) => Promise<AssistantMessage>;
@@ -99,6 +106,7 @@ export async function compactWithWarmPrefix(
   if (!model) throw new Error("Prime Agent has no active model for compaction");
   const leafBefore = ctx.sessionManager.getLeafId?.();
   const sourceBefore = JSON.stringify(spanMessages(event.preparation));
+  const sourceDigest = createHash("sha256").update(sourceBefore).digest("hex");
   const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
   if (!auth.ok) throw new Error(`Could not resolve compaction model authentication: ${auth.error}`);
   if (event.signal.aborted) throw new Error("cache-friendly compaction aborted after authentication");
@@ -144,11 +152,13 @@ export async function compactWithWarmPrefix(
       version: 1,
       cacheRetention: "short",
       publicApiApproximation: true,
-      sourceDigest: createHash("sha256").update(sourceBefore).digest("hex"),
+      sourceDigest,
       ...(leafBefore ? { sourceLeaf: leafBefore } : {}),
       prefixMessages: prefix.length,
       activeTools: tools.length,
       sourceFirstKeptEntryId: plan.firstKeptEntryId,
+      cacheEpochId: createHash("sha256").update(`${ctx.sessionManager.getSessionId()}\0${leafBefore ?? "root"}\0${sourceDigest}\0${plan.firstKeptEntryId}`).digest("hex"),
+      summaryRequest: { inputTokens: usage.input, cacheReadTokens: usage.cacheRead, cacheWriteTokens: usage.cacheWrite },
     },
   };
 }
