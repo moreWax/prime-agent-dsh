@@ -11,6 +11,8 @@ function context(id: string): ExtensionContext {
     cwd: `/workspace/${id}`,
     ui: { notify() {} },
     sessionManager: { getSessionId: () => id },
+    setTimeout: (callback: () => void | Promise<void>, ms: number) => setTimeout(() => { void callback(); }, ms),
+    clearTimeout: (handle: ReturnType<typeof setTimeout> | undefined) => clearTimeout(handle),
   };
   return new Proxy({} as ExtensionContext, { get: (_target, key) => Reflect.get(value, key) });
 }
@@ -68,12 +70,15 @@ test("recursive loader isolates root and RLM child scopes", async () => {
   assert.equal(loader.status(root)?.syncs, 1);
   assert.equal(loader.status(child)?.syncs, 2);
   assert.equal(loader.status(child)?.lastSync?.manifest.sessionId, "child");
+  await emit(handlers, "message_end", {}, child);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(loader.status(child)?.syncs, 3, "message_end timer observes the committed message");
   await emit(handlers, "turn_end", {}, child);
-  assert.equal(loader.status(child)?.syncs, 3);
-  await emit(handlers, "session_compact", {}, child);
   assert.equal(loader.status(child)?.syncs, 4);
+  await emit(handlers, "session_compact", {}, child);
+  assert.equal(loader.status(child)?.syncs, 5);
   await emit(handlers, "session_shutdown", {}, child);
-  assert.equal(calls.filter((id) => id === "child").length, 5, "shutdown performs one final durability sync");
+  assert.equal(calls.filter((id) => id === "child").length, 6, "shutdown performs one final durability sync");
   assert.equal(loader.status(child), undefined);
   assert(loader.status(root));
 });

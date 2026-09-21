@@ -5,6 +5,8 @@ import { ProviderCacheSeries, type ProviderCacheAggregate } from "./provider-cac
 
 const number = (value: unknown): number | undefined => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 
+type TimerHandle = ReturnType<typeof setTimeout>;
+
 export interface SessionContextScope {
   readonly sessionId: string;
   readonly cwd: string;
@@ -15,6 +17,7 @@ export interface SessionContextScope {
   errors: number;
   pressure?: { readonly level: PressureLevel; readonly measurement: SessionTokenBreakdown; readonly contextWindow: number };
   cache?: ProviderCacheAggregate;
+  pendingSync?: TimerHandle;
 }
 
 /**
@@ -37,10 +40,20 @@ export class RecursiveContextLoader {
       await this.synchronize(ctx, scope, event.messages);
       // Observation only: returning no replacement preserves Prime's exact Context.
     });
-    // message_end fires before Prime persists the finalized message. turn_end is
-    // the first public barrier where the complete turn is in SessionManager.
+    // message_end fires before Prime persists the finalized message. A host-owned
+    // zero-delay timer runs after Prime's synchronous append and also covers
+    // daemon paths where turn_end is not observed by this extension instance.
+    pi.on("message_end", (_event, ctx) => {
+      const scope = this.scopes.get(this.sessionId(ctx)) ?? this.bind(ctx);
+      ctx.clearTimeout(scope.pendingSync);
+      scope.pendingSync = ctx.setTimeout(async () => {
+        scope.pendingSync = undefined;
+        await this.synchronize(ctx, scope);
+      }, 0);
+    });
     pi.on("turn_end", async (_event, ctx) => {
       const scope = this.scopes.get(this.sessionId(ctx)) ?? this.bind(ctx);
+      ctx.clearTimeout(scope.pendingSync); scope.pendingSync = undefined;
       await this.synchronize(ctx, scope);
     });
     pi.on("session_compact", async (_event, ctx) => {
@@ -51,7 +64,10 @@ export class RecursiveContextLoader {
       if (ctx?.sessionManager) {
         const sessionId = this.sessionId(ctx);
         const scope = this.scopes.get(sessionId);
-        if (scope) await this.synchronize(ctx, scope);
+        if (scope) {
+          ctx.clearTimeout(scope.pendingSync); scope.pendingSync = undefined;
+          await this.synchronize(ctx, scope);
+        }
         this.scopes.delete(sessionId);
       } else this.scopes.clear();
     });
