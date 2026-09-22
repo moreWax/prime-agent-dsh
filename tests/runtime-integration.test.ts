@@ -21,6 +21,7 @@ function daemonFixture() {
     getFlag() { return undefined; },
   } as unknown as ExtensionAPI;
   const statuses: Array<[string, string | undefined]> = [];
+  const widgets: Array<[string, string[] | undefined, unknown]> = [];
   const notices: Array<[string, string | undefined]> = [];
   const context = {
     mode: "rpc",
@@ -30,6 +31,7 @@ function daemonFixture() {
     scopedModels: [],
     ui: {
       setStatus(key: string, value: string | undefined) { statuses.push([key, value]); },
+      setWidget(key: string, value: string[] | undefined, options?: unknown) { widgets.push([key, value, options]); },
       notify(message: string, level?: string) { notices.push([message, level]); },
     },
     sessionManager: {
@@ -44,7 +46,7 @@ function daemonFixture() {
     hasPendingMessages: () => false,
     getCommands: () => [{ name: "dsh-session", sourceInfo: { path: "/installed/prime-agent-dsh/extensions/index.ts", source: "package", scope: "user", origin: "package" } }],
   } as unknown as ExtensionContext;
-  return { pi, handlers, commands, statuses, notices, context };
+  return { pi, handlers, commands, statuses, widgets, notices, context };
 }
 
 async function emit(fixture: ReturnType<typeof daemonFixture>, event: string, value: any = {}) {
@@ -76,6 +78,7 @@ test("daemon-shaped native UI receives finalized cache usage and lifecycle re-em
     },
   });
   assert.deepEqual(fixture.statuses.at(-1), ["prime-agent-dsh-cache", "DSH cache 90.0%"]);
+  assert.deepEqual(fixture.widgets.at(-1), ["prime-agent-dsh-cache-widget", ["DSH cache 90.0%"], { placement: "belowEditor" }]);
 
   const beforeLifecycle = fixture.statuses.length;
   await emit(fixture, "model_select", { source: "restore", model: fixture.context.model, previousModel: undefined });
@@ -87,6 +90,7 @@ test("daemon-shaped native UI receives finalized cache usage and lifecycle re-em
   assert.equal(fixture.statuses.length, beforeUser, "non-assistant messages do not change cache status");
   await emit(fixture, "session_shutdown", {});
   assert.deepEqual(fixture.statuses.at(-1), ["prime-agent-dsh-cache", undefined]);
+  assert.deepEqual(fixture.widgets.at(-1), ["prime-agent-dsh-cache-widget", undefined, undefined]);
   assert(fixture.statuses.every(([key]) => key === "prime-agent-dsh-cache"), "only Prime native setStatus is used");
 });
 
