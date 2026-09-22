@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { contextObjectRoot } from "../src/context-objects.js";
 import { RecursiveContextLoader } from "../src/recursive-context-loader.js";
 import { RlmContextInheritance } from "../src/rlm-context-bootstrap.js";
-import { registerShadowContextTelemetry } from "./shadow-context.js";
+import { ShadowContextExtension } from "./shadow-context.js";
 
 /** Number of committed message entries in the current session (0 = fresh). */
 function committedMessages(ctx: ExtensionContext): number {
@@ -95,7 +95,7 @@ function syncAge(scope: ReturnType<RecursiveContextLoader["status"]>): string {
 function loadedSource(ctx: ExtensionContext): { identity: string; path: string } {
   try {
     const commands = (ctx as ExtensionContext & { getCommands?: () => Array<{ name?: string; sourceInfo?: { path?: string; source?: string; scope?: string; origin?: string } }> }).getCommands?.();
-    const source = commands?.find((command) => command.name === "dsh-session")?.sourceInfo;
+    const source = commands?.find((command) => command.name === "dsh")?.sourceInfo;
     if (source) {
       const identity = [source.source, source.scope, source.origin].filter(Boolean).join(":");
       return { identity: identity || DSH_SOURCE_URL, path: source.path || DSH_SOURCE_PATH };
@@ -117,7 +117,8 @@ function runtimeDetails(ctx: ExtensionContext, scope: ReturnType<RecursiveContex
 export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
   if (!claimExtensionApi(pi)) return;
   let showCacheDisplay = defaultCacheDisplay();
-  registerShadowContextTelemetry(pi);
+  const shadow = new ShadowContextExtension(pi);
+  shadow.register(false);
   const inheritance = new RlmContextInheritance();
   inheritance.register(pi);
   const contextLoader = new RecursiveContextLoader();
@@ -163,37 +164,33 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
     ctx?.ui?.setWidget?.(CACHE_WIDGET_KEY, undefined);
   });
 
-  pi.registerCommand("dsh-cache", {
-    description: "Show or hide cache-rate text; measurement remains enabled",
+  pi.registerCommand("dsh", {
+    description: "DSH context, cache display, diagnostics, and health",
     handler: async (args, ctx) => {
       await Promise.resolve();
-      const action = args.trim().toLowerCase();
-      if (action !== "show" && action !== "hide") {
-        ctx.ui.notify("Usage: /dsh-cache show | hide", "warning");
+      const input = args.trim();
+      const [section = "status", action = "", ...rest] = input.toLowerCase().split(/\s+/u);
+      if (section === "context" && (action === "on" || action === "off")) {
+        const enabled = action === "on";
+        contextLoader.setEnabled(ctx, enabled);
+        ctx.ui.notify(`DSH context objects are ${enabled ? "enabled" : "disabled"} for this Prime session. Prime inference remains native.`, "info");
         return;
       }
-      showCacheDisplay = action === "show";
-      refreshCacheDisplay(ctx);
-      ctx.ui.notify(`DSH cache-rate text is ${showCacheDisplay ? "shown" : "hidden"}. Measurement and indexing remain enabled.`, "info");
-    },
-  });
-
-  pi.registerCommand("dsh-session", {
-    description: "DSH context: on | off | status | capabilities | doctor",
-    handler: async (args, ctx) => {
-      await Promise.resolve();
-      const verb = args.trim().toLowerCase();
-      if (verb === "on") {
-        contextLoader.setEnabled(ctx, true);
-        ctx.ui.notify("DSH context objects are enabled for this Prime session.", "info");
+      if (section === "cache" && (action === "show" || action === "hide")) {
+        showCacheDisplay = action === "show";
+        refreshCacheDisplay(ctx);
+        ctx.ui.notify(`DSH cache-rate text is ${showCacheDisplay ? "shown" : "hidden"}. Measurement and indexing remain enabled.`, "info");
         return;
       }
-      if (verb === "off") {
-        contextLoader.setEnabled(ctx, false);
-        ctx.ui.notify("DSH context objects are disabled for this Prime session. Prime inference remains native.", "info");
+      if (section === "shadow" && (action === "" || action === "status")) {
+        shadow.notifyStatus(ctx);
         return;
       }
-      if (verb === "status" || verb === "") {
+      if (section === "trace") {
+        shadow.notifyTrace([action, ...rest].filter(Boolean).join(" "), ctx);
+        return;
+      }
+      if (section === "status" && action === "") {
         const scope = contextLoader.status(ctx);
         const latest = scope?.lastSync?.manifest;
         const selected = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "none";
@@ -204,14 +201,14 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
         );
         return;
       }
-      if (verb === "capabilities") {
+      if (section === "capabilities" && action === "") {
         ctx.ui.notify(
           "DSH context capabilities: per-root/child isolation, native automatic bounded RLM inheritance, DSH Session projection, immutable snapshots, bounded search/messages, private artifacts, provider-reported cache metrics, durable IPython admission, and expiring parent-to-child grants. Prime remains the sole model/tool loop.",
           "info",
         );
         return;
       }
-      if (verb === "doctor") {
+      if (section === "doctor" && action === "") {
         const sessionId = ctx.sessionManager.getSessionId?.() ?? "";
         const sessionFile = ctx.sessionManager.getSessionFile?.();
         const root = contextObjectRoot(sessionId, sessionFile);
@@ -230,7 +227,8 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
         );
         return;
       }
-      ctx.ui.notify("Usage: /dsh-session on | off | status | capabilities | doctor", "warning");
+      ctx.ui.notify("Usage: /dsh status | context on|off | cache show|hide | shadow status | trace [count|clear] | capabilities | doctor", "warning");
     },
   });
+
 }

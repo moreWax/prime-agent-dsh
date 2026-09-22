@@ -55,8 +55,7 @@ test("production entrypoint cannot register providers or model-facing tools", as
   const ctx = context();
   for (const handler of fixture.handlers.get("session_start") ?? []) await handler({}, ctx);
   assert.deepEqual(fixture.forbidden, []);
-  assert(fixture.commands.includes("dsh-session"));
-  assert(fixture.commands.includes("dsh-context-status"));
+  assert.deepEqual(fixture.commands, ["dsh"]);
   assert.equal(fixture.handlers.get("before_agent_start")?.length, 1);
   assert.equal(fixture.handlers.get("context")?.length, 3);
 });

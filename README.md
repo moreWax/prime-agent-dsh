@@ -59,15 +59,13 @@ prime-agent -e ./extensions/index.ts
 
 ## Commands
 
-- `/dsh-session status` — show the current isolated scope, revision, cache metrics, plugin/source identity, Prime compatibility, sync freshness/error, and restart guidance.
-- `/dsh-cache show` — show native cache-rate text; measurement remains enabled either way.
-- `/dsh-cache hide` — hide cache-rate text without disabling measurement or indexing.
-- `/dsh-session on` — enable context snapshotting for this Prime session.
-- `/dsh-session off` — disable context snapshotting for this Prime session. Prime inference is unaffected.
-- `/dsh-session capabilities` — summarize available sidecar features.
-- `/dsh-session doctor` — verify the current session's artifact binding.
-- `/dsh-context-status` — show optional shadow-mirror health.
-- `/dsh-context-trace [count|clear]` — inspect content-free prefix telemetry.
+- `/dsh status` — show scope, revision, cache metrics, plugin/source identity, compatibility, freshness, and errors.
+- `/dsh context on|off` — enable or disable reference-index publication; Prime inference is unaffected.
+- `/dsh cache show|hide` — control only cache-rate text visibility; measurement and indexing continue.
+- `/dsh shadow status` — show optional passive shadow-mirror health.
+- `/dsh trace [count|clear]` — inspect or clear content-free prefix telemetry.
+- `/dsh capabilities` — summarize available sidecar features.
+- `/dsh doctor` — verify the current session artifact binding.
 
 ## Python context objects
 
@@ -156,7 +154,7 @@ session-artifacts/<session>/dsh-context/
 
 Prime JSONL is the sole canonical history. Each lifecycle sync publishes a transactional, content-addressed generation. Recovery scans immutable heads and validates commits and objects; `CURRENT` and `manifest.json` are replaceable hints/views. A corrupt or interrupted publication therefore falls back to the newest valid retained generation. Append mode is used only after exact source and effective prefix proof; forks, history replacement, and other rewrites rebuild. `session_compact` is observed only to resync after Prime has replaced history.
 
-Derived checkpoints are immutable while retained, but retention is bounded to the two newest valid generations. Old heads are retired before their commits, objects, and compatibility manifests. Explicit cursors to retired snapshots report that the snapshot is unavailable. User `artifacts/` and `grants/` are never collected. Publication also stops for that session when the 64 MiB derived-store quota or 128 MiB free-space reserve would be crossed. Prime continues normally. After freeing space, run `/dsh-session on` to re-arm publication.
+Derived checkpoints are immutable while retained, but retention is bounded to the two newest valid generations. Old heads are retired before their commits, objects, and compatibility manifests. Explicit cursors to retired snapshots report that the snapshot is unavailable. User `artifacts/` and `grants/` are never collected. Publication also stops for that session when the 64 MiB derived-store quota or 128 MiB free-space reserve would be crossed. Prime continues normally. After freeing space, run `/dsh context on` to re-arm publication.
 
 ### Upgrade and restart
 
