@@ -27,9 +27,7 @@ General Prime Agent, provider, or Node installation problems may belong in the c
 
 ## Security and sensitive reports
 
-Do not disclose a suspected vulnerability in a public issue. Use a private contact method exposed by the repository owner on GitHub and include only the minimum information needed to establish contact. Wait for a secure exchange method before sending session data, credentials, exploit details, or grant tokens.
-
-If no private method is available, open a public issue that says only that you need a private security contact. Do not include vulnerability details.
+Do not disclose a suspected vulnerability in a public issue. Follow [SECURITY.md](SECURITY.md) and use the repository's private GitHub Security Advisory flow. Never include live credentials, capability tokens, or private session content in a report.
 
 ## Compatibility policy
 

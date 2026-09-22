@@ -13,6 +13,14 @@ const expectedKeywords = [
   "prime-agent", "prime-agent-package", "pi-package", "context-management", "context-window", "deepseek-harness",
 ];
 const communityFiles = [
+  "CHANGELOG.md",
+  "CODE_OF_CONDUCT.md",
+  "CONTRIBUTING.md",
+  "ROADMAP.md",
+  "SECURITY.md",
+  "SUPPORT.md",
+  "docs/getting-started.md",
+  "docs/security.md",
   ".github/dependabot.yml",
   ".github/ISSUE_TEMPLATE/bug_report.yml",
   ".github/ISSUE_TEMPLATE/config.yml",
@@ -22,8 +30,8 @@ const communityFiles = [
   ".github/workflows/publish.yml",
 ];
 const expected = [
-  "LICENSE", "README.md", "THIRD_PARTY_NOTICES.md", "package.json",
-  "docs/context-spill.md", "docs/durable-context-query.md", "docs/shadow-telemetry-validation.md", "docs/single-window-cache-architecture.md",
+  "CHANGELOG.md", "LICENSE", "README.md", "SECURITY.md", "THIRD_PARTY_NOTICES.md", "package.json",
+  "docs/context-spill.md", "docs/durable-context-query.md", "docs/getting-started.md", "docs/security.md", "docs/shadow-telemetry-validation.md", "docs/single-window-cache-architecture.md",
   "extensions/index.ts", "extensions/shadow-context.ts", "scripts/package-smoke.mjs", "scripts/patch-pi-ai-partial-json.mjs",
   "skills/dsh-context/SKILL.md", "skills/dsh-context/pyproject.toml", "skills/dsh-context/src/dsh_context/__init__.py",
   "src/context-converter.ts", "src/context-objects.ts", "src/context-protocol.ts", "src/context-spill.ts",
@@ -86,8 +94,10 @@ try {
   assert.equal(manifest.peerDependencies["@earendil-works/pi-coding-agent"], ">=0.86.1");
   assert.deepEqual(manifest.pi, { extensions: ["./extensions/index.ts"], skills: ["./skills"] });
   const packedReadme = await readFile(join(installed, "README.md"), "utf8");
-  assert.match(packedReadme, /Agents[\s\S]*Ctrl\+X[^\n]*twice/);
-  assert.match(packedReadme, /Prime deletes the matching session artifact directory/);
+  assert.match(packedReadme, /Getting started/);
+  const packedGettingStarted = await readFile(join(installed, "docs", "getting-started.md"), "utf8");
+  assert.match(packedGettingStarted, /Agents[\s\S]*Ctrl\+X[^\n]*twice/);
+  assert.match(packedGettingStarted, /Prime deletes the matching session artifact directory/);
   assert.deepEqual(
     Object.keys(manifest.dependencies).filter((name) => name.startsWith("@deepseek-ai/")).sort(),
     ["@deepseek-ai/cordis", "@deepseek-ai/dsh-attachment", "@deepseek-ai/dsh-attachment-local", "@deepseek-ai/dsh-llm", "@deepseek-ai/dsh-session"],
