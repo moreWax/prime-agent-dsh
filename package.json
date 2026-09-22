@@ -1,6 +1,6 @@
 {
   "name": "prime-agent-dsh",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "DeepSeek Harness context sidecar and Python context objects for Prime Agent.",
   "keywords": [
     "pi-package",
@@ -70,8 +70,8 @@
     "partial-json": "0.1.7"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-ai": ">=0.86.1",
+    "@earendil-works/pi-coding-agent": ">=0.86.1",
     "typebox": "*"
   },
   "devDependencies": {

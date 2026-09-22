@@ -16,11 +16,14 @@ export interface SessionContextScope {
   enabled: boolean;
   disabledReason?: string;
   lastSync?: ContextObjectSyncResult;
+  /** Process-local completion time for status/doctor freshness. */
+  lastSyncAt?: number;
   lastError?: string;
   syncs: number;
   errors: number;
   cache?: ProviderCacheAggregate;
   latestCache?: ProviderCachePoint;
+  cacheSeries?: ProviderCacheSeries;
   dirty?: boolean;
   pending?: PendingSync;
   running?: Promise<void>;
@@ -84,6 +87,26 @@ export class RecursiveContextLoader {
     return this.scopes.get(this.sessionId(ctx))?.enabled ?? true;
   }
 
+  /** Record finalized provider usage before Prime emits the next context event. */
+  observeFinalizedAssistant(ctx: ExtensionContext, message: unknown): ProviderCachePoint | undefined {
+    if (!message || typeof message !== "object") return undefined;
+    const value = message as Record<string, unknown>;
+    if (value.role !== "assistant" || !value.usage || typeof value.usage !== "object") return undefined;
+    const usage = value.usage as Record<string, unknown>;
+    const scope = this.scopeFor(ctx);
+    const series = scope.cacheSeries ?? new ProviderCacheSeries();
+    const latest = series.add({
+      request: series.points().length + 1,
+      inputTokens: number(usage.input),
+      cacheReadTokens: number(usage.cacheRead),
+      cacheWriteTokens: number(usage.cacheWrite),
+    });
+    scope.cacheSeries = series;
+    scope.latestCache = latest;
+    scope.cache = series.aggregate();
+    return latest;
+  }
+
   private async requestSync(ctx: ExtensionContext, scope: SessionContextScope, messages: readonly unknown[] | undefined, wait: boolean): Promise<void> {
     if (!scope.enabled || this.scopes.get(scope.sessionId) !== scope) return;
     scope.pending = { ctx: this.detach(ctx), ...(messages === undefined ? {} : { messages: [...messages] }) };
@@ -112,7 +135,10 @@ export class RecursiveContextLoader {
     try {
       const synced = await this.store.sync(ctx, messages);
       if (this.scopes.get(scope.sessionId) !== scope) return;
-      if (synced) scope.lastSync = synced;
+      if (synced) {
+        scope.lastSync = synced;
+        scope.lastSyncAt = Date.now();
+      }
       scope.lastError = undefined;
       scope.syncs++;
     } catch (error) {
@@ -160,6 +186,7 @@ export class RecursiveContextLoader {
       request++;
       series.add({ request, inputTokens: number(usage.input), cacheReadTokens: number(usage.cacheRead), cacheWriteTokens: number(usage.cacheWrite) });
     }
+    scope.cacheSeries = series;
     scope.cache = series.aggregate();
     const latest = series.points().at(-1);
     if (latest) scope.latestCache = latest; else delete scope.latestCache;

@@ -58,7 +58,7 @@ prime-agent -e ./extensions/index.ts
 
 ## Commands
 
-- `/dsh-session status` — show the current isolated scope, revision, and cache metrics.
+- `/dsh-session status` — show the current isolated scope, revision, cache metrics, plugin/source identity, Prime compatibility, sync freshness/error, and restart guidance.
 - `/dsh-session on` — enable context snapshotting for this Prime session.
 - `/dsh-session off` — disable context snapshotting for this Prime session. Prime inference is unaffected.
 - `/dsh-session capabilities` — summarize available sidecar features.
@@ -157,6 +157,8 @@ Derived checkpoints are immutable while retained, but retention is bounded to th
 ### Upgrade and restart
 
 No manual data migration is required. Install this version and restart Prime Agent. The first publication under the new process removes legacy rebuildable snapshot layouts and prunes old derived generations under the writer lock. Prime JSONL, user artifacts, grants, and inheritance data are not changed. Do not delete session directories manually.
+
+Delete an old session through Prime's native **Agents** view: select the session and press `Ctrl+X` twice to confirm. Prime deletes the matching session artifact directory. DSH adds no deletion command. This keeps session deletion and compaction under Prime's sole lifecycle authority.
 
 Directories use mode `0700`; files use mode `0600`. Object paths and digests are verified. Reads, search results, injected values, artifacts, and grants have hard size limits. Projection errors fail open and leave Prime's request unchanged.
 

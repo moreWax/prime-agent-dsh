@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { readdirSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { contextObjectRoot } from "../src/context-objects.js";
 import { RecursiveContextLoader } from "../src/recursive-context-loader.js";
 import { RlmContextInheritance } from "../src/rlm-context-bootstrap.js";
@@ -39,7 +40,24 @@ function recentSiblingSession(ctx: ExtensionContext): { id: string; ageMinutes: 
   }
 }
 
+export const DSH_VERSION = "0.2.0";
+export const PRIME_COMPATIBILITY = "Prime Agent >=0.9.5 / pi-coding-agent >=0.86.1";
+export const DSH_SOURCE_URL = import.meta.url;
+export const DSH_SOURCE_PATH = fileURLToPath(import.meta.url);
 const CACHE_STATUS_KEY = "prime-agent-dsh-cache";
+const INSTALLS_KEY = Symbol.for("prime-agent-dsh.installs.v1");
+
+type InstallRegistry = WeakSet<object>;
+type GlobalWithDshInstalls = typeof globalThis & { [INSTALLS_KEY]?: InstallRegistry };
+
+/** Process-global because separately loaded package copies do not share module state. */
+export function claimExtensionApi(pi: ExtensionAPI): boolean {
+  const global = globalThis as GlobalWithDshInstalls;
+  const installs = global[INSTALLS_KEY] ??= new WeakSet<object>();
+  if (installs.has(pi)) return false;
+  installs.add(pi);
+  return true;
+}
 
 export function cacheFooterText(efficiency: number | null | undefined): string {
   const cache = efficiency === null || efficiency === undefined ? "—" : `${(efficiency * 100).toFixed(1)}%`;
@@ -50,12 +68,35 @@ function updateCacheStatus(ctx: ExtensionContext, loader: RecursiveContextLoader
   ctx.ui.setStatus(CACHE_STATUS_KEY, cacheFooterText(loader.status(ctx)?.latestCache?.efficiency));
 }
 
+function syncAge(scope: ReturnType<RecursiveContextLoader["status"]>): string {
+  if (!scope?.lastSyncAt) return "pending";
+  return `${Math.max(0, Math.round((Date.now() - scope.lastSyncAt) / 1000))}s`;
+}
+
+function loadedSource(ctx: ExtensionContext): { identity: string; path: string } {
+  try {
+    const commands = (ctx as ExtensionContext & { getCommands?: () => Array<{ name?: string; sourceInfo?: { path?: string; source?: string; scope?: string; origin?: string } }> }).getCommands?.();
+    const source = commands?.find((command) => command.name === "dsh-session")?.sourceInfo;
+    if (source) {
+      const identity = [source.source, source.scope, source.origin].filter(Boolean).join(":");
+      return { identity: identity || DSH_SOURCE_URL, path: source.path || DSH_SOURCE_PATH };
+    }
+  } catch { /* Older Prime builds do not expose command provenance. */ }
+  return { identity: DSH_SOURCE_URL, path: DSH_SOURCE_PATH };
+}
+
+function runtimeDetails(ctx: ExtensionContext, scope: ReturnType<RecursiveContextLoader["status"]>): string {
+  const source = loadedSource(ctx);
+  return `pluginVersion=${DSH_VERSION}, sourceIdentity=${source.identity}, sourcePath=${source.path}, compatibility=${PRIME_COMPATIBILITY}, lastSyncAge=${syncAge(scope)}, lastError=${scope?.lastError ?? "none"}, restart=restart Prime after install/update`;
+}
+
 /**
  * Prime owns the model loop, tools, transcript, and RLM tree. DSH contributes a
  * rebuildable context projection, immutable Python-visible artifacts, cache
  * observations. Prime alone owns compaction and DSH only indexes committed history.
  */
 export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
+  if (!claimExtensionApi(pi)) return;
   registerShadowContextTelemetry(pi);
   const inheritance = new RlmContextInheritance();
   inheritance.register(pi);
@@ -82,6 +123,13 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("context", (_event, ctx) => { updateCacheStatus(ctx, contextLoader); });
+  pi.on("message_end", (event, ctx) => {
+    const latest = contextLoader.observeFinalizedAssistant(ctx, event.message);
+    if (latest) updateCacheStatus(ctx, contextLoader);
+  });
+  // Re-emit native status when a daemon UI can newly attach or replace its model.
+  pi.on("model_select", (_event, ctx) => { updateCacheStatus(ctx, contextLoader); });
+  pi.on("session_info_changed", (_event, ctx) => { updateCacheStatus(ctx, contextLoader); });
   pi.on("session_shutdown", async (_event, ctx) => {
     await Promise.resolve();
     ctx?.ui?.setStatus?.(CACHE_STATUS_KEY, undefined);
@@ -108,7 +156,7 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
         const selected = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "none";
         const publication = latest?.publication;
         ctx.ui.notify(
-          `DSH context: enabled=${contextLoader.isEnabled(ctx)}, inheritance=${inheritance.status(ctx).state}, loop=Prime, model=${selected}, syncs=${scope?.syncs ?? 0}, errors=${scope?.errors ?? 0}, revision=${latest?.revision ?? 0}, entries=${latest?.entryCount ?? 0}, source=${publication ? `${publication.source.mode}:${publication.source.reused}/${publication.source.new}/${publication.source.reindexed}` : "pending"}, effective=${publication ? `${publication.effective.reused}/${publication.effective.new}/${publication.effective.reindexed}` : "pending"}, effectiveReason=${publication?.effective.rebuildReason ?? "pending"}, cacheRead=${latest?.metrics.cacheReadTokens ?? 0}, cacheWrite=${latest?.metrics.cacheWriteTokens ?? 0}`,
+          `DSH context: enabled=${contextLoader.isEnabled(ctx)}, inheritance=${inheritance.status(ctx).state}, loop=Prime, model=${selected}, syncs=${scope?.syncs ?? 0}, errors=${scope?.errors ?? 0}, revision=${latest?.revision ?? 0}, entries=${latest?.entryCount ?? 0}, source=${publication ? `${publication.source.mode}:${publication.source.reused}/${publication.source.new}/${publication.source.reindexed}` : "pending"}, effective=${publication ? `${publication.effective.reused}/${publication.effective.new}/${publication.effective.reindexed}` : "pending"}, effectiveReason=${publication?.effective.rebuildReason ?? "pending"}, cacheRead=${latest?.metrics.cacheReadTokens ?? 0}, cacheWrite=${latest?.metrics.cacheWriteTokens ?? 0}, ${runtimeDetails(ctx, scope)}`,
           scope?.lastError ? "warning" : "info",
         );
         return;
@@ -126,15 +174,15 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
         const root = contextObjectRoot(sessionId, sessionFile);
         const scope = contextLoader.status(ctx);
         if (!sessionId || !sessionFile || !root) {
-          ctx.ui.notify("DSH context doctor: this session has no persistent artifact directory; context objects require a persisted Prime session.", "warning");
+          ctx.ui.notify(`DSH context doctor: this session has no persistent artifact directory; context objects require a persisted Prime session. ${runtimeDetails(ctx, scope)}`, "warning");
           return;
         }
         if (scope?.lastError) {
-          ctx.ui.notify(`DSH context doctor failed: ${scope.lastError}`, "error");
+          ctx.ui.notify(`DSH context doctor failed: ${scope.lastError} · ${runtimeDetails(ctx, scope)}`, "error");
           return;
         }
         ctx.ui.notify(
-          `DSH context doctor OK · Prime loop authoritative · session=${sessionId} · root=${root} · snapshot=${scope?.lastSync?.manifest.digest ?? "pending first provider context"}`,
+          `DSH context doctor OK · Prime loop authoritative · session=${sessionId} · root=${root} · snapshot=${scope?.lastSync?.manifest.digest ?? "pending first provider context"} · ${runtimeDetails(ctx, scope)}`,
           "info",
         );
         return;

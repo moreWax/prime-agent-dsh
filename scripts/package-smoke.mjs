@@ -46,11 +46,16 @@ try {
   run(npm, ["init", "--yes"], { cwd: project, env: isolatedEnv });
   const tarball = join(temp, pack.filename);
   run(npm, ["install", "--omit=dev", tarball,
-    "@earendil-works/pi-coding-agent@0.84.4", "@earendil-works/pi-ai@0.84.4", "typebox@1.3.25"], { cwd: project, env: isolatedEnv });
+    "@earendil-works/pi-coding-agent@0.86.1", "@earendil-works/pi-ai@0.86.1", "typebox@1.3.34"], { cwd: project, env: isolatedEnv });
 
   const installed = join(project, "node_modules", "prime-agent-dsh");
   const manifest = JSON.parse(await readFile(join(installed, "package.json"), "utf8"));
+  assert.equal(manifest.version, "0.2.0", "packed plugin version is stale");
+  assert.equal(manifest.peerDependencies["@earendil-works/pi-coding-agent"], ">=0.86.1");
   assert.deepEqual(manifest.pi, { extensions: ["./extensions/index.ts"], skills: ["./skills"] });
+  const packedReadme = await readFile(join(installed, "README.md"), "utf8");
+  assert.match(packedReadme, /Agents[\s\S]*Ctrl\+X[^\n]*twice/);
+  assert.match(packedReadme, /Prime deletes the matching session artifact directory/);
   assert.deepEqual(
     Object.keys(manifest.dependencies).filter((name) => name.startsWith("@deepseek-ai/")).sort(),
     ["@deepseek-ai/cordis", "@deepseek-ai/dsh-attachment", "@deepseek-ai/dsh-attachment-local", "@deepseek-ai/dsh-llm", "@deepseek-ai/dsh-session"],
@@ -77,6 +82,10 @@ try {
   assert.equal(extensions.extensions[0].tools.size, 0, "context-sidecar extension must not replace Prime tools");
   assert.equal((extensions.extensions[0].handlers.get("before_agent_start") ?? []).length, 1, "task-aware inheritance admission handler is missing");
   assert((extensions.extensions[0].handlers.get("context") ?? []).length >= 2, "inheritance ordering/context projection handlers are missing");
+  for (const event of ["message_end", "model_select", "session_info_changed", "session_shutdown"]) {
+    assert((extensions.extensions[0].handlers.get(event) ?? []).length > 0, `${event} native lifecycle handler is missing`);
+  }
+  assert.equal(extensions.extensions[0].messageRenderers.size, 0, "status must not use a custom message/footer renderer");
   assert(!skills.skills.some(({ name }) => name === "deepseek-harness"), "legacy delegation skill must not ship without its removed tool");
   assert(skills.skills.some(({ name }) => name === "dsh-context"), "Prime did not discover the dsh-context skill");
   assert.equal(skills.diagnostics.length, 0, JSON.stringify(skills.diagnostics));
