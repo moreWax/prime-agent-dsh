@@ -48,6 +48,11 @@ const CACHE_STATUS_KEY = "prime-agent-dsh-cache";
 const CACHE_WIDGET_KEY = "prime-agent-dsh-cache-widget";
 const INSTALLS_KEY = Symbol.for("prime-agent-dsh.installs.v1");
 
+export function defaultCacheDisplay(env: NodeJS.ProcessEnv = process.env): boolean {
+  const value = env.PRIME_DSH_CACHE_DISPLAY?.trim().toLowerCase();
+  return value !== "off" && value !== "false" && value !== "0";
+}
+
 type InstallRegistry = WeakSet<object>;
 type GlobalWithDshInstalls = typeof globalThis & { [INSTALLS_KEY]?: InstallRegistry };
 
@@ -111,15 +116,23 @@ function runtimeDetails(ctx: ExtensionContext, scope: ReturnType<RecursiveContex
  */
 export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
   if (!claimExtensionApi(pi)) return;
+  let showCacheDisplay = defaultCacheDisplay();
   registerShadowContextTelemetry(pi);
   const inheritance = new RlmContextInheritance();
   inheritance.register(pi);
   const contextLoader = new RecursiveContextLoader();
   contextLoader.register(pi);
+  const refreshCacheDisplay = (ctx: ExtensionContext): void => {
+    if (showCacheDisplay) updateCacheStatus(ctx, contextLoader);
+    else {
+      ctx.ui.setStatus(CACHE_STATUS_KEY, undefined);
+      ctx.ui.setWidget(CACHE_WIDGET_KEY, undefined);
+    }
+  };
 
   pi.on("session_start", async (_event, ctx) => {
     await Promise.resolve();
-    updateCacheStatus(ctx, contextLoader);
+    refreshCacheDisplay(ctx);
     if (!ctx.hasUI) return;
     const modelLabel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "none";
     const state = contextLoader.isEnabled(ctx) ? "on" : "off";
@@ -136,22 +149,37 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
     ctx.ui.notify(`Fresh session · DSH context ${state} · inheritance ${inheritanceNotice} · Prime loop · model ${modelLabel}${hint}`, inherited.state === "degraded" || inherited.state === "incompatible" ? "warning" : "info");
   });
 
-  pi.on("context", (_event, ctx) => { updateCacheStatus(ctx, contextLoader); });
+  pi.on("context", (_event, ctx) => { refreshCacheDisplay(ctx); });
   pi.on("message_end", (event, ctx) => {
     const latest = contextLoader.observeFinalizedAssistant(ctx, event.message);
-    if (latest) updateCacheStatus(ctx, contextLoader);
+    if (latest) refreshCacheDisplay(ctx);
   });
   // Re-emit native status when a daemon UI can newly attach or replace its model.
-  pi.on("model_select", (_event, ctx) => { updateCacheStatus(ctx, contextLoader); });
-  pi.on("session_info_changed", (_event, ctx) => { updateCacheStatus(ctx, contextLoader); });
+  pi.on("model_select", (_event, ctx) => { refreshCacheDisplay(ctx); });
+  pi.on("session_info_changed", (_event, ctx) => { refreshCacheDisplay(ctx); });
   pi.on("session_shutdown", async (_event, ctx) => {
     await Promise.resolve();
     ctx?.ui?.setStatus?.(CACHE_STATUS_KEY, undefined);
     ctx?.ui?.setWidget?.(CACHE_WIDGET_KEY, undefined);
   });
 
+  pi.registerCommand("dsh-cache", {
+    description: "Show or hide cache-rate text; measurement remains enabled",
+    handler: async (args, ctx) => {
+      await Promise.resolve();
+      const action = args.trim().toLowerCase();
+      if (action !== "show" && action !== "hide") {
+        ctx.ui.notify("Usage: /dsh-cache show | hide", "warning");
+        return;
+      }
+      showCacheDisplay = action === "show";
+      refreshCacheDisplay(ctx);
+      ctx.ui.notify(`DSH cache-rate text is ${showCacheDisplay ? "shown" : "hidden"}. Measurement and indexing remain enabled.`, "info");
+    },
+  });
+
   pi.registerCommand("dsh-session", {
-    description: "DSH context for this session: on | off | status | capabilities | doctor",
+    description: "DSH context: on | off | status | capabilities | doctor",
     handler: async (args, ctx) => {
       await Promise.resolve();
       const verb = args.trim().toLowerCase();
@@ -171,7 +199,7 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
         const selected = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "none";
         const publication = latest?.publication;
         ctx.ui.notify(
-          `DSH context: enabled=${contextLoader.isEnabled(ctx)}, inheritance=${inheritance.status(ctx).state}, loop=Prime, model=${selected}, syncs=${scope?.syncs ?? 0}, errors=${scope?.errors ?? 0}, revision=${latest?.revision ?? 0}, entries=${latest?.entryCount ?? 0}, source=${publication ? `${publication.source.mode}:${publication.source.reused}/${publication.source.new}/${publication.source.reindexed}` : "pending"}, effective=${publication ? `${publication.effective.reused}/${publication.effective.new}/${publication.effective.reindexed}` : "pending"}, effectiveReason=${publication?.effective.rebuildReason ?? "pending"}, cacheRead=${latest?.metrics.cacheReadTokens ?? 0}, cacheWrite=${latest?.metrics.cacheWriteTokens ?? 0}, ${runtimeDetails(ctx, scope)}`,
+          `DSH context: enabled=${contextLoader.isEnabled(ctx)}, cacheText=${showCacheDisplay ? "shown" : "hidden"}, inheritance=${inheritance.status(ctx).state}, loop=Prime, model=${selected}, syncs=${scope?.syncs ?? 0}, errors=${scope?.errors ?? 0}, revision=${latest?.revision ?? 0}, entries=${latest?.entryCount ?? 0}, source=${publication ? `${publication.source.mode}:${publication.source.reused}/${publication.source.new}/${publication.source.reindexed}` : "pending"}, effective=${publication ? `${publication.effective.reused}/${publication.effective.new}/${publication.effective.reindexed}` : "pending"}, effectiveReason=${publication?.effective.rebuildReason ?? "pending"}, cacheRead=${latest?.metrics.cacheReadTokens ?? 0}, cacheWrite=${latest?.metrics.cacheWriteTokens ?? 0}, ${runtimeDetails(ctx, scope)}`,
           scope?.lastError ? "warning" : "info",
         );
         return;

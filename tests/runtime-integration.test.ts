@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import extension, { DSH_SOURCE_PATH, DSH_SOURCE_URL, DSH_VERSION, PRIME_COMPATIBILITY } from "../extensions/index.js";
+import extension, { defaultCacheDisplay, DSH_SOURCE_PATH, DSH_SOURCE_URL, DSH_VERSION, PRIME_COMPATIBILITY } from "../extensions/index.js";
 
 type Handler = (event: any, ctx: ExtensionContext) => unknown;
 type Command = { handler: (args: string, ctx: ExtensionContext) => Promise<void> };
@@ -59,11 +59,11 @@ test("process-global install guard rejects a second DSH copy for one ExtensionAP
   const initial = [...fixture.handlers.values()].reduce((sum, entries) => sum + entries.length, 0);
   extension(fixture.pi);
   assert.equal([...fixture.handlers.values()].reduce((sum, entries) => sum + entries.length, 0), initial);
-  assert.equal(fixture.commands.size, 3);
+  assert.equal(fixture.commands.size, 4);
 
   const anotherSessionRuntime = daemonFixture();
   extension(anotherSessionRuntime.pi);
-  assert.equal(anotherSessionRuntime.commands.size, 3, "a distinct ExtensionAPI must remain installable in this process");
+  assert.equal(anotherSessionRuntime.commands.size, 4, "a distinct ExtensionAPI must remain installable in this process");
 });
 
 test("daemon-shaped native UI receives finalized cache usage and lifecycle re-emission", async () => {
@@ -92,6 +92,22 @@ test("daemon-shaped native UI receives finalized cache usage and lifecycle re-em
   assert.deepEqual(fixture.statuses.at(-1), ["prime-agent-dsh-cache", undefined]);
   assert.deepEqual(fixture.widgets.at(-1), ["prime-agent-dsh-cache-widget", undefined, undefined]);
   assert(fixture.statuses.every(([key]) => key === "prime-agent-dsh-cache"), "only Prime native setStatus is used");
+});
+
+
+
+test("cache-rate text display can be hidden without disabling measurement", async () => {
+  assert.equal(defaultCacheDisplay({}), true);
+  assert.equal(defaultCacheDisplay({ PRIME_DSH_CACHE_DISPLAY: "off" }), false);
+  const fixture = daemonFixture();
+  extension(fixture.pi);
+  await emit(fixture, "session_start", { reason: "startup" });
+  await fixture.commands.get("dsh-cache")?.handler("hide", fixture.context);
+  assert.deepEqual(fixture.widgets.at(-1), ["prime-agent-dsh-cache-widget", undefined, undefined]);
+  assert.match(fixture.notices.at(-1)?.[0] ?? "", /cache-rate text is hidden/);
+  await fixture.commands.get("dsh-cache")?.handler("show", fixture.context);
+  assert.deepEqual(fixture.widgets.at(-1), ["prime-agent-dsh-cache-widget", ["DSH cache · turn — · session —"], { placement: "aboveEditor" }]);
+  assert.match(fixture.notices.at(-1)?.[0] ?? "", /cache-rate text is shown/);
 });
 
 test("session status and doctor expose runtime provenance and restart guidance", async () => {

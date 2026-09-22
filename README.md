@@ -60,6 +60,8 @@ prime-agent -e ./extensions/index.ts
 ## Commands
 
 - `/dsh-session status` — show the current isolated scope, revision, cache metrics, plugin/source identity, Prime compatibility, sync freshness/error, and restart guidance.
+- `/dsh-cache show` — show native cache-rate text; measurement remains enabled either way.
+- `/dsh-cache hide` — hide cache-rate text without disabling measurement or indexing.
 - `/dsh-session on` — enable context snapshotting for this Prime session.
 - `/dsh-session off` — disable context snapshotting for this Prime session. Prime inference is unaffected.
 - `/dsh-session capabilities` — summarize available sidecar features.
@@ -127,6 +129,7 @@ Grants are token-addressed, read-only, size-limited, and expiring. A child alway
 
 | Variable or flag | Default | Purpose |
 |---|---:|---|
+| `PRIME_DSH_CACHE_DISPLAY` | `on` | Initial cache-rate text visibility; set `off` to start hidden. |
 | `PRIME_DSH_SHADOW_MODE` | `off` | Set to `on` for a second, diagnostic-only round-trip mirror. |
 | `PRIME_DSH_SHADOW_MAX_MESSAGES` | `500` | Bound shadow work by message count. |
 | `PRIME_DSH_SHADOW_MAX_BYTES` | `4194304` | Bound shadow work by serialized bytes. |
