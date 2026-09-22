@@ -97,7 +97,7 @@
     "@types/node": "^22.0.0",
     "eslint": "^10.9.1",
     "tsx": "^4.20.0",
-    "typescript": "^5.9.0",
+    "typescript": "^7.0.2",
     "typescript-eslint": "^8.69.0",
     "@earendil-works/pi-ai": "0.86.1",
     "@earendil-works/pi-coding-agent": "0.86.1",
