@@ -1,0 +1,50 @@
+name: Bug report
+description: Report a reproducible problem in prime-agent-dsh
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for helping improve prime-agent-dsh. Do not include credentials or private session content.
+  - type: input
+    id: version
+    attributes:
+      label: prime-agent-dsh version
+      placeholder: 0.2.0
+    validations:
+      required: true
+  - type: input
+    id: prime-version
+    attributes:
+      label: Prime Agent version
+    validations:
+      required: true
+  - type: dropdown
+    id: node-version
+    attributes:
+      label: Node.js major version
+      options: ["22", "24", "Other"]
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the observed and expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Remove tokens, credentials, personal data, and private session content.
+      render: shell

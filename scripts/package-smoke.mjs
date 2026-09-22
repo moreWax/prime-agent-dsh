@@ -8,6 +8,19 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 const originalHome = process.env.HOME ?? process.env.USERPROFILE;
+const repositoryUrl = "https://github.com/moreWax/prime-agent-dsh";
+const expectedKeywords = [
+  "prime-agent", "prime-agent-package", "pi-package", "context-management", "context-window", "deepseek-harness",
+];
+const communityFiles = [
+  ".github/dependabot.yml",
+  ".github/ISSUE_TEMPLATE/bug_report.yml",
+  ".github/ISSUE_TEMPLATE/config.yml",
+  ".github/ISSUE_TEMPLATE/feature_request.yml",
+  ".github/PULL_REQUEST_TEMPLATE.md",
+  ".github/workflows/ci.yml",
+  ".github/workflows/publish.yml",
+];
 const expected = [
   "LICENSE", "README.md", "THIRD_PARTY_NOTICES.md", "package.json",
   "docs/context-spill.md", "docs/durable-context-query.md", "docs/shadow-telemetry-validation.md", "docs/single-window-cache-architecture.md",
@@ -24,6 +37,18 @@ function run(command, args, options = {}) {
   return result.stdout;
 }
 
+for (const path of communityFiles) {
+  const contents = await readFile(join(root, path), "utf8");
+  assert(contents.trim().length > 0, `${path} must not be empty`);
+}
+const ciWorkflow = await readFile(join(root, ".github/workflows/ci.yml"), "utf8");
+assert.match(ciWorkflow, /node: \[22, 24\]/, "CI must test all supported Node.js majors");
+assert.match(ciWorkflow, /npm ci[\s\S]*npm run release:check/, "CI must validate the clean install");
+const publishWorkflow = await readFile(join(root, ".github/workflows/publish.yml"), "utf8");
+assert.match(publishWorkflow, /id-token: write/, "npm trusted publishing needs OIDC permission");
+assert.match(publishWorkflow, /npm publish --access public --provenance/, "release publishing must include provenance");
+assert(!/npm_[A-Za-z0-9]{20,}/.test(publishWorkflow), "publish workflow appears to contain an npm token");
+
 const temp = await mkdtemp(join(tmpdir(), "prime-agent-dsh-pack-"));
 try {
   const home = join(temp, "home");
@@ -36,8 +61,9 @@ try {
   assert(pack?.filename, "npm pack did not report a tarball");
   const actual = pack.files.map(({ path }) => path).sort();
   assert.deepEqual(actual, expected, "packed artifact does not match the release allowlist");
-  assert(!actual.some((path) => /(^|\/)(test|tests|fixtures)(\/|$)/i.test(path)), "test material leaked into the tarball");
-  assert(!actual.some((path) => /(^|\/)(\.env|auth\.json|credentials?)(\.|\/|$)/i.test(path)), "a secret-bearing filename leaked into the tarball");
+  assert(!actual.some((path) => /(^|\/)(test|tests|fixtures)(\/|$)|(?:^|\.)test\.[^/]+$/i.test(path)), "test material leaked into the tarball");
+  assert(!actual.some((path) => /(^|\/)(?:\.env(?:\.|$)|\.npmrc$|\.pypirc$|auth\.json$|credentials?(?:\.|\/|$)|id_rsa$)|\.(?:pem|key|p12)$/i.test(path)), "a secret-bearing filename leaked into the tarball");
+  assert(!actual.some((path) => path.startsWith(".github/")), "repository community files leaked into the runtime package");
   assert(!actual.some((path) => /(?:dsh-provider|model-wrapper|agent-pool|branch-checkpoint|acp-client|transparent-routing)/i.test(path)), "legacy model/agent-loop source leaked into the tarball");
 
   const project = join(temp, "consumer");
@@ -51,6 +77,12 @@ try {
   const installed = join(project, "node_modules", "prime-agent-dsh");
   const manifest = JSON.parse(await readFile(join(installed, "package.json"), "utf8"));
   assert.equal(manifest.version, "0.2.0", "packed plugin version is stale");
+  assert.deepEqual(manifest.repository, { type: "git", url: `git+${repositoryUrl}.git` });
+  assert.equal(manifest.homepage, `${repositoryUrl}#readme`);
+  assert.deepEqual(manifest.bugs, { url: `${repositoryUrl}/issues` });
+  assert.deepEqual(manifest.publishConfig, { access: "public", provenance: true });
+  assert.deepEqual(manifest.keywords, expectedKeywords);
+  assert.equal(manifest.funding, undefined, "do not advertise a funding destination that the project does not provide");
   assert.equal(manifest.peerDependencies["@earendil-works/pi-coding-agent"], ">=0.86.1");
   assert.deepEqual(manifest.pi, { extensions: ["./extensions/index.ts"], skills: ["./skills"] });
   const packedReadme = await readFile(join(installed, "README.md"), "utf8");
