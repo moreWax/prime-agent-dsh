@@ -12,9 +12,6 @@ Staging implementation observes Prime `context` and `before_provider_request` ev
 
 ## Commands
 
-- `/dsh shadow status` — current branch shadow status
-- `/dsh trace [count]` — bounded recent trace
-- `/dsh trace clear` — clear current session trace
 
 ## Validation
 

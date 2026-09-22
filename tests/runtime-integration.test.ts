@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import extension, { defaultCacheDisplay, DSH_SOURCE_PATH, DSH_SOURCE_URL, DSH_VERSION, PRIME_COMPATIBILITY } from "../extensions/index.js";
+import extension, { defaultCacheDisplay } from "../extensions/index.js";
 
 type Handler = (event: any, ctx: ExtensionContext) => unknown;
 type Command = { handler: (args: string, ctx: ExtensionContext) => Promise<void> };
@@ -96,38 +96,27 @@ test("daemon-shaped native UI receives finalized cache usage and lifecycle re-em
 
 
 
-test("cache-rate text display can be hidden without disabling measurement", async () => {
+test("bare dsh toggles cache text and reports the resulting state", async () => {
   assert.equal(defaultCacheDisplay({}), true);
   assert.equal(defaultCacheDisplay({ PRIME_DSH_CACHE_DISPLAY: "off" }), false);
   const fixture = daemonFixture();
   extension(fixture.pi);
   await emit(fixture, "session_start", { reason: "startup" });
-  await fixture.commands.get("dsh")?.handler("cache hide", fixture.context);
+  await fixture.commands.get("dsh")?.handler("", fixture.context);
   assert.deepEqual(fixture.widgets.at(-1), ["prime-agent-dsh-cache-widget", undefined, undefined]);
-  assert.match(fixture.notices.at(-1)?.[0] ?? "", /cache-rate text is hidden/);
-  await fixture.commands.get("dsh")?.handler("cache show", fixture.context);
+  assert.match(fixture.notices.at(-1)?.[0] ?? "", /DSH 0\.2\.0 · cache text OFF · indexing ACTIVE/);
+  await fixture.commands.get("dsh")?.handler("", fixture.context);
   assert.deepEqual(fixture.widgets.at(-1), ["prime-agent-dsh-cache-widget", ["DSH cache · turn — · session —"], { placement: "aboveEditor" }]);
-  assert.match(fixture.notices.at(-1)?.[0] ?? "", /cache-rate text is shown/);
+  assert.match(fixture.notices.at(-1)?.[0] ?? "", /DSH 0\.2\.0 · cache text ON · indexing ACTIVE/);
 });
 
-test("session status and doctor expose runtime provenance and restart guidance", async () => {
+test("explicit dsh on and off are deterministic", async () => {
   const fixture = daemonFixture();
   extension(fixture.pi);
   await emit(fixture, "session_start", { reason: "startup" });
-  await fixture.commands.get("dsh")?.handler("status", fixture.context);
-  const status = fixture.notices.at(-1)?.[0] ?? "";
-  assert.match(status, new RegExp(`pluginVersion=${DSH_VERSION}`));
-  assert(status.includes(`compatibility=${PRIME_COMPATIBILITY}`));
-  assert.match(status, /lastSyncAge=pending/);
-  assert.match(status, /lastError=none/);
-  assert.match(status, /restart=restart Prime after install\/update/);
-  assert(status.includes("sourceIdentity=package:user:package"));
-  assert(status.includes("sourcePath=/installed/prime-agent-dsh/extensions/index.ts"));
-  assert(DSH_SOURCE_URL.startsWith("file:"));
-  assert(DSH_SOURCE_PATH.endsWith("extensions/index.ts"));
-
-  await fixture.commands.get("dsh")?.handler("doctor", fixture.context);
-  const doctor = fixture.notices.at(-1)?.[0] ?? "";
-  assert.match(doctor, /pluginVersion=0\.2\.0/);
-  assert.match(doctor, /restart Prime after install\/update/);
+  await fixture.commands.get("dsh")?.handler("off", fixture.context);
+  await fixture.commands.get("dsh")?.handler("off", fixture.context);
+  assert.match(fixture.notices.at(-1)?.[0] ?? "", /cache text OFF/);
+  await fixture.commands.get("dsh")?.handler("on", fixture.context);
+  assert.match(fixture.notices.at(-1)?.[0] ?? "", /cache text ON/);
 });

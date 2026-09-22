@@ -1,8 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { readdirSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { contextObjectRoot } from "../src/context-objects.js";
 import { RecursiveContextLoader } from "../src/recursive-context-loader.js";
 import { RlmContextInheritance } from "../src/rlm-context-bootstrap.js";
 import { ShadowContextExtension } from "./shadow-context.js";
@@ -41,9 +39,6 @@ function recentSiblingSession(ctx: ExtensionContext): { id: string; ageMinutes: 
 }
 
 export const DSH_VERSION = "0.2.0";
-export const PRIME_COMPATIBILITY = "Prime Agent >=0.9.5 / pi-coding-agent >=0.86.1";
-export const DSH_SOURCE_URL = import.meta.url;
-export const DSH_SOURCE_PATH = fileURLToPath(import.meta.url);
 const CACHE_STATUS_KEY = "prime-agent-dsh-cache";
 const CACHE_WIDGET_KEY = "prime-agent-dsh-cache-widget";
 const INSTALLS_KEY = Symbol.for("prime-agent-dsh.installs.v1");
@@ -87,28 +82,6 @@ function updateCacheStatus(ctx: ExtensionContext, loader: RecursiveContextLoader
   ctx.ui.setWidget(CACHE_WIDGET_KEY, [text], { placement: "aboveEditor" });
 }
 
-function syncAge(scope: ReturnType<RecursiveContextLoader["status"]>): string {
-  if (!scope?.lastSyncAt) return "pending";
-  return `${Math.max(0, Math.round((Date.now() - scope.lastSyncAt) / 1000))}s`;
-}
-
-function loadedSource(ctx: ExtensionContext): { identity: string; path: string } {
-  try {
-    const commands = (ctx as ExtensionContext & { getCommands?: () => Array<{ name?: string; sourceInfo?: { path?: string; source?: string; scope?: string; origin?: string } }> }).getCommands?.();
-    const source = commands?.find((command) => command.name === "dsh")?.sourceInfo;
-    if (source) {
-      const identity = [source.source, source.scope, source.origin].filter(Boolean).join(":");
-      return { identity: identity || DSH_SOURCE_URL, path: source.path || DSH_SOURCE_PATH };
-    }
-  } catch { /* Older Prime builds do not expose command provenance. */ }
-  return { identity: DSH_SOURCE_URL, path: DSH_SOURCE_PATH };
-}
-
-function runtimeDetails(ctx: ExtensionContext, scope: ReturnType<RecursiveContextLoader["status"]>): string {
-  const source = loadedSource(ctx);
-  return `pluginVersion=${DSH_VERSION}, sourceIdentity=${source.identity}, sourcePath=${source.path}, compatibility=${PRIME_COMPATIBILITY}, lastSyncAge=${syncAge(scope)}, lastError=${scope?.lastError ?? "none"}, restart=restart Prime after install/update`;
-}
-
 /**
  * Prime owns the model loop, tools, transcript, and RLM tree. DSH contributes a
  * rebuildable context projection, immutable Python-visible artifacts, cache
@@ -117,8 +90,7 @@ function runtimeDetails(ctx: ExtensionContext, scope: ReturnType<RecursiveContex
 export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
   if (!claimExtensionApi(pi)) return;
   let showCacheDisplay = defaultCacheDisplay();
-  const shadow = new ShadowContextExtension(pi);
-  shadow.register(false);
+  new ShadowContextExtension(pi).register(false);
   const inheritance = new RlmContextInheritance();
   inheritance.register(pi);
   const contextLoader = new RecursiveContextLoader();
@@ -165,69 +137,24 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("dsh", {
-    description: "DSH context, cache display, diagnostics, and health",
+    description: "Toggle DSH cache-rate text and report the resulting state",
     handler: async (args, ctx) => {
       await Promise.resolve();
-      const input = args.trim();
-      const [section = "status", action = "", ...rest] = input.toLowerCase().split(/\s+/u);
-      if (section === "context" && (action === "on" || action === "off")) {
-        const enabled = action === "on";
-        contextLoader.setEnabled(ctx, enabled);
-        ctx.ui.notify(`DSH context objects are ${enabled ? "enabled" : "disabled"} for this Prime session. Prime inference remains native.`, "info");
+      const action = args.trim().toLowerCase();
+      if (action === "") showCacheDisplay = !showCacheDisplay;
+      else if (action === "on") showCacheDisplay = true;
+      else if (action === "off") showCacheDisplay = false;
+      else {
+        ctx.ui.notify("Usage: /dsh [on|off]", "warning");
         return;
       }
-      if (section === "cache" && (action === "show" || action === "hide")) {
-        showCacheDisplay = action === "show";
-        refreshCacheDisplay(ctx);
-        ctx.ui.notify(`DSH cache-rate text is ${showCacheDisplay ? "shown" : "hidden"}. Measurement and indexing remain enabled.`, "info");
-        return;
-      }
-      if (section === "shadow" && (action === "" || action === "status")) {
-        shadow.notifyStatus(ctx);
-        return;
-      }
-      if (section === "trace") {
-        shadow.notifyTrace([action, ...rest].filter(Boolean).join(" "), ctx);
-        return;
-      }
-      if (section === "status" && action === "") {
-        const scope = contextLoader.status(ctx);
-        const latest = scope?.lastSync?.manifest;
-        const selected = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "none";
-        const publication = latest?.publication;
-        ctx.ui.notify(
-          `DSH context: enabled=${contextLoader.isEnabled(ctx)}, cacheText=${showCacheDisplay ? "shown" : "hidden"}, inheritance=${inheritance.status(ctx).state}, loop=Prime, model=${selected}, syncs=${scope?.syncs ?? 0}, errors=${scope?.errors ?? 0}, revision=${latest?.revision ?? 0}, entries=${latest?.entryCount ?? 0}, source=${publication ? `${publication.source.mode}:${publication.source.reused}/${publication.source.new}/${publication.source.reindexed}` : "pending"}, effective=${publication ? `${publication.effective.reused}/${publication.effective.new}/${publication.effective.reindexed}` : "pending"}, effectiveReason=${publication?.effective.rebuildReason ?? "pending"}, cacheRead=${latest?.metrics.cacheReadTokens ?? 0}, cacheWrite=${latest?.metrics.cacheWriteTokens ?? 0}, ${runtimeDetails(ctx, scope)}`,
-          scope?.lastError ? "warning" : "info",
-        );
-        return;
-      }
-      if (section === "capabilities" && action === "") {
-        ctx.ui.notify(
-          "DSH context capabilities: per-root/child isolation, native automatic bounded RLM inheritance, DSH Session projection, immutable snapshots, bounded search/messages, private artifacts, provider-reported cache metrics, durable IPython admission, and expiring parent-to-child grants. Prime remains the sole model/tool loop.",
-          "info",
-        );
-        return;
-      }
-      if (section === "doctor" && action === "") {
-        const sessionId = ctx.sessionManager.getSessionId?.() ?? "";
-        const sessionFile = ctx.sessionManager.getSessionFile?.();
-        const root = contextObjectRoot(sessionId, sessionFile);
-        const scope = contextLoader.status(ctx);
-        if (!sessionId || !sessionFile || !root) {
-          ctx.ui.notify(`DSH context doctor: this session has no persistent artifact directory; context objects require a persisted Prime session. ${runtimeDetails(ctx, scope)}`, "warning");
-          return;
-        }
-        if (scope?.lastError) {
-          ctx.ui.notify(`DSH context doctor failed: ${scope.lastError} · ${runtimeDetails(ctx, scope)}`, "error");
-          return;
-        }
-        ctx.ui.notify(
-          `DSH context doctor OK · Prime loop authoritative · session=${sessionId} · root=${root} · snapshot=${scope?.lastSync?.manifest.digest ?? "pending first provider context"} · ${runtimeDetails(ctx, scope)}`,
-          "info",
-        );
-        return;
-      }
-      ctx.ui.notify("Usage: /dsh status | context on|off | cache show|hide | shadow status | trace [count|clear] | capabilities | doctor", "warning");
+      refreshCacheDisplay(ctx);
+      const scope = contextLoader.status(ctx);
+      const rates = cacheFooterText(scope?.latestCache?.efficiency, canonicalSessionEfficiency(scope)).replace(/^DSH cache · /u, "");
+      ctx.ui.notify(
+        `DSH ${DSH_VERSION} · cache text ${showCacheDisplay ? "ON" : "OFF"} · indexing ${contextLoader.isEnabled(ctx) ? "ACTIVE" : "PAUSED"} · ${rates}`,
+        scope?.lastError ? "warning" : "info",
+      );
     },
   });
 
