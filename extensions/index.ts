@@ -45,7 +45,6 @@ export const PRIME_COMPATIBILITY = "Prime Agent >=0.9.5 / pi-coding-agent >=0.86
 export const DSH_SOURCE_URL = import.meta.url;
 export const DSH_SOURCE_PATH = fileURLToPath(import.meta.url);
 const CACHE_STATUS_KEY = "prime-agent-dsh-cache";
-const CACHE_WIDGET_KEY = "prime-agent-dsh-cache-widget";
 const INSTALLS_KEY = Symbol.for("prime-agent-dsh.installs.v1");
 
 type InstallRegistry = WeakSet<object>;
@@ -79,7 +78,6 @@ function updateCacheStatus(ctx: ExtensionContext, loader: RecursiveContextLoader
   const scope = loader.status(ctx);
   const text = cacheFooterText(scope?.latestCache?.efficiency, canonicalSessionEfficiency(scope));
   ctx.ui.setStatus(CACHE_STATUS_KEY, text);
-  ctx.ui.setWidget(CACHE_WIDGET_KEY, [text], { placement: "aboveEditor" });
 }
 
 function syncAge(scope: ReturnType<RecursiveContextLoader["status"]>): string {
@@ -147,7 +145,6 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
   pi.on("session_shutdown", async (_event, ctx) => {
     await Promise.resolve();
     ctx?.ui?.setStatus?.(CACHE_STATUS_KEY, undefined);
-    ctx?.ui?.setWidget?.(CACHE_WIDGET_KEY, undefined);
   });
 
   pi.registerCommand("dsh-session", {

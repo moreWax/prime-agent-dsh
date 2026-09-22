@@ -26,7 +26,6 @@ See [`docs/single-window-cache-architecture.md`](docs/single-window-cache-archit
 - Immutable snapshots tied to the exact Prime branch leaf and revision.
 - Bounded transcript search, message reads, and private artifacts through Python.
 - Provider-reported input/output/cache token metrics.
-- Native Prime `belowEditor` cache-rate widget for daemon-attached chat; no custom footer or styling.
 - Explicit durable context admission through recorded IPython results.
 - Automatic bounded parent-to-child evidence capsules through stock Prime lifecycle hooks.
 - Expiring, bounded parent-to-child context grants for explicit larger selections.
