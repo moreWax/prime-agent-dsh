@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ContextObjectStore, type ContextObjectSyncResult } from "./context-objects.js";
-import { ProviderCacheSeries, type ProviderCacheAggregate } from "./provider-cache-series.js";
+import { ProviderCacheSeries, type ProviderCacheAggregate, type ProviderCachePoint } from "./provider-cache-series.js";
 
 const number = (value: unknown): number | undefined => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 
@@ -20,6 +20,7 @@ export interface SessionContextScope {
   syncs: number;
   errors: number;
   cache?: ProviderCacheAggregate;
+  latestCache?: ProviderCachePoint;
   dirty?: boolean;
   pending?: PendingSync;
   running?: Promise<void>;
@@ -160,6 +161,8 @@ export class RecursiveContextLoader {
       series.add({ request, inputTokens: number(usage.input), cacheReadTokens: number(usage.cacheRead), cacheWriteTokens: number(usage.cacheWrite) });
     }
     scope.cache = series.aggregate();
+    const latest = series.points().at(-1);
+    if (latest) scope.latestCache = latest; else delete scope.latestCache;
   }
 
   private sessionId(ctx: ExtensionContext): string {

@@ -166,3 +166,15 @@ test("capacity refusal fails publication off until explicitly re-armed", async (
   assert.equal(calls, 2);
   assert.equal(loader.isEnabled(ctx), true);
 });
+
+test("latest provider cache efficiency is available for the footer status", async () => {
+  const { handlers, loader } = fixture(async () => undefined);
+  const ctx = context("cache-status");
+  await emit(handlers, "session_start", {}, ctx);
+  await emit(handlers, "context", { messages: [
+    { role: "assistant", usage: { input: 20, cacheRead: 80, cacheWrite: 0 } },
+    { role: "assistant", usage: { input: 5, cacheRead: 95, cacheWrite: 0 } },
+  ] }, ctx);
+  assert.equal(loader.status(ctx)?.latestCache?.efficiency, .95);
+  assert.equal(loader.status(ctx)?.latestCache?.cacheReadTokens, 95);
+});

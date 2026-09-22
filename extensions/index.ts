@@ -39,6 +39,15 @@ function recentSiblingSession(ctx: ExtensionContext): { id: string; ageMinutes: 
   }
 }
 
+const CACHE_STATUS_KEY = "prime-agent-dsh-cache";
+
+function updateCacheStatus(ctx: ExtensionContext, loader: RecursiveContextLoader): void {
+  if (!ctx.hasUI) return;
+  const efficiency = loader.status(ctx)?.latestCache?.efficiency;
+  const value = efficiency === null || efficiency === undefined ? "—" : `${(efficiency * 100).toFixed(1)}%`;
+  ctx.ui.setStatus(CACHE_STATUS_KEY, `DSH cache ${value}`);
+}
+
 /**
  * Prime owns the model loop, tools, transcript, and RLM tree. DSH contributes a
  * rebuildable context projection, immutable Python-visible artifacts, cache
@@ -53,6 +62,7 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
 
   pi.on("session_start", async (_event, ctx) => {
     await Promise.resolve();
+    updateCacheStatus(ctx, contextLoader);
     if (!ctx.hasUI) return;
     const modelLabel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "none";
     const state = contextLoader.isEnabled(ctx) ? "on" : "off";
@@ -67,6 +77,12 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
     const sibling = recentSiblingSession(ctx);
     const hint = sibling ? ` · a session from ${sibling.ageMinutes} min ago exists — resume it to keep context` : "";
     ctx.ui.notify(`Fresh session · DSH context ${state} · inheritance ${inheritanceNotice} · Prime loop · model ${modelLabel}${hint}`, inherited.state === "degraded" || inherited.state === "incompatible" ? "warning" : "info");
+  });
+
+  pi.on("context", (_event, ctx) => { updateCacheStatus(ctx, contextLoader); });
+  pi.on("session_shutdown", async (_event, ctx) => {
+    await Promise.resolve();
+    if (ctx.hasUI) ctx.ui.setStatus(CACHE_STATUS_KEY, undefined);
   });
 
   pi.registerCommand("dsh-session", {

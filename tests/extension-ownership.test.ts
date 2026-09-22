@@ -58,7 +58,7 @@ test("production entrypoint cannot register providers or model-facing tools", as
   assert(fixture.commands.includes("dsh-session"));
   assert(fixture.commands.includes("dsh-context-status"));
   assert.equal(fixture.handlers.get("before_agent_start")?.length, 1);
-  assert.equal(fixture.handlers.get("context")?.length, 2);
+  assert.equal(fixture.handlers.get("context")?.length, 3);
 });
 
 test("production context observers preserve Prime messages by identity and value", async () => {
