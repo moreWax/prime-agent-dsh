@@ -104,7 +104,7 @@ export class ShadowContextExtension {
     this.mirror = this.options.mode === "on" ? (mirror ?? new ShadowMirrorController()) : undefined;
   }
 
-  register(): ShadowContextTelemetry {
+  register(registerCommands = true): ShadowContextTelemetry {
     if (this.options.mode === "on") {
       this.pi.on("context", (event, ctx) => {
         const here = location(ctx);
@@ -116,44 +116,48 @@ export class ShadowContextExtension {
         this.telemetry.observe("before_provider_request", event.payload, location(ctx));
       });
     }
-    this.registerStatusCommand();
-    this.registerTraceCommand();
+    if (registerCommands) {
+      this.registerStatusCommand();
+      this.registerTraceCommand();
+    }
     return this.telemetry;
+  }
+
+  notifyStatus(ctx: ExtensionContext): void {
+    const here = location(ctx);
+    if (this.options.mode === "off") { ctx.ui.notify("DSH context shadow is off (normal Prime path). Set PRIME_DSH_SHADOW_MODE=on and reload to enable diagnostics.", "info"); return; }
+    const status = this.telemetry.status(here.sessionId, here.branchId) ?? this.telemetry.status(here.sessionId);
+    if (!status) { ctx.ui.notify(`DSH context shadow: no observations for session ${here.sessionId}`, "info"); return; }
+    const c = this.mirror?.counters ?? { syncs: 0, skips: 0, errors: 0, appends: 0, noops: 0, rebuilds: 0 };
+    ctx.ui.notify(`DSH context shadow session=${status.sessionId} branch=${status.branchId} observations=${status.observations} errors=${status.errors}
+context ${metric(status.context)}
+provider ${metric(status.provider)}
+DSH mode=${this.options.mode} bounded-skips=${this.boundedSkips}
+DSH mirror syncs=${c.syncs} append=${c.appends} noop=${c.noops} rebuild=${c.rebuilds} skips=${c.skips} errors=${c.errors}`, status.errors || c.errors ? "warning" : "info");
   }
 
   private registerStatusCommand(): void {
     this.pi.registerCommand("dsh-context-status", {
       description: "Show passive Prime context/provider prefix telemetry",
-      handler: async (_args, ctx) => {
-        await Promise.resolve();
-        const here = location(ctx);
-        if (this.options.mode === "off") { ctx.ui.notify("DSH context shadow is off (normal Prime path). Set PRIME_DSH_SHADOW_MODE=on and reload to enable diagnostics.", "info"); return; }
-        const status = this.telemetry.status(here.sessionId, here.branchId) ?? this.telemetry.status(here.sessionId);
-        if (!status) { ctx.ui.notify(`DSH context shadow: no observations for session ${here.sessionId}`, "info"); return; }
-        const c = this.mirror?.counters ?? { syncs: 0, skips: 0, errors: 0, appends: 0, noops: 0, rebuilds: 0 };
-        ctx.ui.notify(`DSH context shadow session=${status.sessionId} branch=${status.branchId} observations=${status.observations} errors=${status.errors}
-context ${metric(status.context)}
-provider ${metric(status.provider)}
-DSH mode=${this.options.mode} bounded-skips=${this.boundedSkips}
-DSH mirror syncs=${c.syncs} append=${c.appends} noop=${c.noops} rebuild=${c.rebuilds} skips=${c.skips} errors=${c.errors}`, status.errors || c.errors ? "warning" : "info");
-      },
+      handler: async (_args, ctx) => { await Promise.resolve(); this.notifyStatus(ctx); },
     });
+  }
+
+  notifyTrace(args: string, ctx: ExtensionContext): void {
+    const here = location(ctx);
+    const arg = args.trim().toLowerCase();
+    if (arg === "clear") { this.telemetry.clear(here.sessionId); ctx.ui.notify("DSH context shadow trace cleared for this session", "info"); return; }
+    const requested = arg ? Number.parseInt(arg, 10) : 10;
+    const count = Number.isFinite(requested) ? Math.min(Math.max(requested, 1), 50) : 10;
+    const entries = this.telemetry.traces(here.sessionId, count);
+    const text = entries.length ? entries.map((entry) => `${entry.observedAt} branch=${entry.branchId} ${entry.stage} ${metric(entry)}`).join("\n") : "No context shadow trace observations.";
+    ctx.ui.notify(text, "info");
   }
 
   private registerTraceCommand(): void {
     this.pi.registerCommand("dsh-context-trace", {
       description: "Show or clear passive context fingerprint trace (/dsh-context-trace [count|clear])",
-      handler: async (args, ctx) => {
-        await Promise.resolve();
-        const here = location(ctx);
-        const arg = args.trim().toLowerCase();
-        if (arg === "clear") { this.telemetry.clear(here.sessionId); ctx.ui.notify("DSH context shadow trace cleared for this session", "info"); return; }
-        const requested = arg ? Number.parseInt(arg, 10) : 10;
-        const count = Number.isFinite(requested) ? Math.min(Math.max(requested, 1), 50) : 10;
-        const entries = this.telemetry.traces(here.sessionId, count);
-        const text = entries.length ? entries.map((entry) => `${entry.observedAt} branch=${entry.branchId} ${entry.stage} ${metric(entry)}`).join("\n") : "No context shadow trace observations.";
-        ctx.ui.notify(text, "info");
-      },
+      handler: async (args, ctx) => { await Promise.resolve(); this.notifyTrace(args, ctx); },
     });
   }
 }

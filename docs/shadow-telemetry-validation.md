@@ -12,10 +12,7 @@ Staging implementation observes Prime `context` and `before_provider_request` ev
 
 ## Commands
 
-- `/dsh-context-status` — current branch status
-- `/dsh-context-trace [count]` — bounded recent trace
-- `/dsh-context-trace clear` — clear current session trace
 
 ## Validation
 
-`npm run check` passes TypeScript typechecking and 12 tests. Tests cover canonical fingerprints, credential redaction, UTF-8 byte LCP, append/rewrite classification, branch/session isolation, bounded traces, no payload mutation/content retention, and fail-open cyclic-payload handling.
+`npm run check` runs typechecking, lint, the Prime-native sidecar tests, and Python context-object tests. Coverage includes canonical fingerprints, credential redaction, UTF-8 byte LCP, append/rewrite classification, branch/session isolation, bounded traces, no payload mutation/content retention, and fail-open cyclic-payload handling.

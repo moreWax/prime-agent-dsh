@@ -8,17 +8,34 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 const originalHome = process.env.HOME ?? process.env.USERPROFILE;
+const repositoryUrl = "https://github.com/moreWax/prime-agent-dsh";
+const expectedKeywords = [
+  "prime-agent", "prime-agent-package", "pi-package", "context-management", "context-window", "deepseek-harness",
+];
+const communityFiles = [
+  "CHANGELOG.md",
+  "CODE_OF_CONDUCT.md",
+  "CONTRIBUTING.md",
+  "ROADMAP.md",
+  "SECURITY.md",
+  "SUPPORT.md",
+  "docs/getting-started.md",
+  "docs/security.md",
+  ".github/dependabot.yml",
+  ".github/ISSUE_TEMPLATE/bug_report.yml",
+  ".github/ISSUE_TEMPLATE/config.yml",
+  ".github/ISSUE_TEMPLATE/feature_request.yml",
+  ".github/PULL_REQUEST_TEMPLATE.md",
+  ".github/workflows/ci.yml",
+  ".github/workflows/publish.yml",
+];
 const expected = [
-  "LICENSE", "README.md", "THIRD_PARTY_NOTICES.md", "package.json",
-  "docs/inference-context-plan.md", "docs/model-wrapper-poc.md", "docs/shadow-telemetry-validation.md",
-  "dsh/README.md", "dsh/acp-route.patch.yml", "dsh/cordis.patch.yml", "dsh/package.json", "dsh/provider.js", "dsh/tool.js",
-  "extensions/index.ts", "extensions/shadow-context.ts", "scripts/package-smoke.mjs", "skills/deepseek-harness/SKILL.md",
-  "src/acp-client.ts", "src/compaction.ts", "src/config.ts", "src/context-converter.ts", "src/context-protocol.ts",
-  "src/dsh-agent-pool.ts", "src/dsh-capabilities.ts", "src/dsh-context-service.ts", "src/dsh-image-attachments.ts",
-  "src/dsh-provider-catalog.ts", "src/dsh-provider-config.ts", "src/dsh-provider-host.ts", "src/dsh-provider-security.ts",
-  "src/dsh-provider-turn-reasons.ts", "src/dsh-provider-types.ts", "src/dsh-provider.ts", "src/model-route.ts",
-  "src/notifications.ts", "src/prefix-metrics.ts", "src/prime-user-questions.ts", "src/runtime-manager.ts",
-  "src/shadow-telemetry.ts", "src/transparent-provider.ts",
+  "CHANGELOG.md", "LICENSE", "README.md", "SECURITY.md", "THIRD_PARTY_NOTICES.md", "package.json",
+  "docs/context-spill.md", "docs/durable-context-query.md", "docs/getting-started.md", "docs/security.md", "docs/shadow-telemetry-validation.md", "docs/single-window-cache-architecture.md",
+  "extensions/index.ts", "extensions/shadow-context.ts", "scripts/package-smoke.mjs", "scripts/patch-pi-ai-partial-json.mjs",
+  "skills/dsh-context/SKILL.md", "skills/dsh-context/pyproject.toml", "skills/dsh-context/src/dsh_context/__init__.py",
+  "src/context-converter.ts", "src/context-objects.ts", "src/context-protocol.ts", "src/context-spill.ts",
+  "src/dsh-context-service.ts", "src/durable-context-query.ts", "src/durable-context-store.ts", "src/durable-file-attachments.ts", "src/dsh-image-attachments.ts", "src/prefix-metrics.ts", "src/provider-cache-series.ts", "src/recursive-context-loader.ts", "src/rlm-context-bootstrap.ts", "src/rlm-context-inheritance.ts", "src/shadow-telemetry.ts",
 ].sort();
 
 function run(command, args, options = {}) {
@@ -27,6 +44,18 @@ function run(command, args, options = {}) {
   if (result.status !== 0) throw new Error(`${command} ${args.join(" ")} failed (${result.status})\n${result.stdout}${result.stderr}`);
   return result.stdout;
 }
+
+for (const path of communityFiles) {
+  const contents = await readFile(join(root, path), "utf8");
+  assert(contents.trim().length > 0, `${path} must not be empty`);
+}
+const ciWorkflow = await readFile(join(root, ".github/workflows/ci.yml"), "utf8");
+assert.match(ciWorkflow, /node: \[22, 24\]/, "CI must test all supported Node.js majors");
+assert.match(ciWorkflow, /npm ci[\s\S]*npm run release:check/, "CI must validate the clean install");
+const publishWorkflow = await readFile(join(root, ".github/workflows/publish.yml"), "utf8");
+assert.match(publishWorkflow, /id-token: write/, "npm trusted publishing needs OIDC permission");
+assert.match(publishWorkflow, /npm publish --access public --provenance/, "release publishing must include provenance");
+assert(!/npm_[A-Za-z0-9]{20,}/.test(publishWorkflow), "publish workflow appears to contain an npm token");
 
 const temp = await mkdtemp(join(tmpdir(), "prime-agent-dsh-pack-"));
 try {
@@ -40,20 +69,49 @@ try {
   assert(pack?.filename, "npm pack did not report a tarball");
   const actual = pack.files.map(({ path }) => path).sort();
   assert.deepEqual(actual, expected, "packed artifact does not match the release allowlist");
-  assert(!actual.some((path) => /(^|\/)(test|tests|fixtures)(\/|$)/i.test(path)), "test material leaked into the tarball");
-  assert(!actual.some((path) => /(^|\/)(\.env|auth\.json|credentials?)(\.|\/|$)/i.test(path)), "a secret-bearing filename leaked into the tarball");
+  assert(!actual.some((path) => /(^|\/)(test|tests|fixtures)(\/|$)|(?:^|\.)test\.[^/]+$/i.test(path)), "test material leaked into the tarball");
+  assert(!actual.some((path) => /(^|\/)(?:\.env(?:\.|$)|\.npmrc$|\.pypirc$|auth\.json$|credentials?(?:\.|\/|$)|id_rsa$)|\.(?:pem|key|p12)$/i.test(path)), "a secret-bearing filename leaked into the tarball");
+  assert(!actual.some((path) => path.startsWith(".github/")), "repository community files leaked into the runtime package");
+  assert(!actual.some((path) => /(?:dsh-provider|model-wrapper|agent-pool|branch-checkpoint|acp-client|transparent-routing)/i.test(path)), "legacy model/agent-loop source leaked into the tarball");
 
   const project = join(temp, "consumer");
   const { mkdir } = await import("node:fs/promises");
   await mkdir(project);
   run(npm, ["init", "--yes"], { cwd: project, env: isolatedEnv });
   const tarball = join(temp, pack.filename);
-  run(npm, ["install", "--omit=dev", "--ignore-scripts", tarball,
-    "@earendil-works/pi-coding-agent@0.84.4", "@earendil-works/pi-ai@0.84.4", "typebox@1.3.25"], { cwd: project, env: isolatedEnv });
+  run(npm, ["install", "--omit=dev", tarball,
+    "@earendil-works/pi-coding-agent@0.86.1", "@earendil-works/pi-ai@0.86.1", "typebox@1.3.34"], { cwd: project, env: isolatedEnv });
 
   const installed = join(project, "node_modules", "prime-agent-dsh");
   const manifest = JSON.parse(await readFile(join(installed, "package.json"), "utf8"));
+  assert.equal(manifest.version, "0.2.0", "packed plugin version is stale");
+  assert.deepEqual(manifest.repository, { type: "git", url: `git+${repositoryUrl}.git` });
+  assert.equal(manifest.homepage, `${repositoryUrl}#readme`);
+  assert.deepEqual(manifest.bugs, { url: `${repositoryUrl}/issues` });
+  assert.deepEqual(manifest.publishConfig, { access: "public", provenance: true });
+  assert.deepEqual(manifest.keywords, expectedKeywords);
+  assert.equal(manifest.funding, undefined, "do not advertise a funding destination that the project does not provide");
+  assert.equal(manifest.peerDependencies["@earendil-works/pi-coding-agent"], ">=0.86.1");
   assert.deepEqual(manifest.pi, { extensions: ["./extensions/index.ts"], skills: ["./skills"] });
+  const packedReadme = await readFile(join(installed, "README.md"), "utf8");
+  assert.match(packedReadme, /Getting started/);
+  const packedGettingStarted = await readFile(join(installed, "docs", "getting-started.md"), "utf8");
+  assert.match(packedGettingStarted, /Agents[\s\S]*Ctrl\+X[^\n]*twice/);
+  assert.match(packedGettingStarted, /Prime deletes the matching session artifact directory/);
+  assert.deepEqual(
+    Object.keys(manifest.dependencies).filter((name) => name.startsWith("@deepseek-ai/")).sort(),
+    ["@deepseek-ai/cordis", "@deepseek-ai/dsh-attachment", "@deepseek-ai/dsh-attachment-local", "@deepseek-ai/dsh-llm", "@deepseek-ai/dsh-session"],
+    "production package must depend only on sidecar DSH components",
+  );
+  const piAiCandidates = [
+    join(installed, "node_modules", "@earendil-works", "pi-ai", "dist", "utils", "json-parse.js"),
+    join(project, "node_modules", "@earendil-works", "pi-ai", "dist", "utils", "json-parse.js"),
+  ];
+  let patchedPiAi;
+  for (const candidate of piAiCandidates) {
+    try { patchedPiAi = await readFile(candidate, "utf8"); break; } catch { /* try npm's other legal placement */ }
+  }
+  assert.match(patchedPiAi ?? "", /\.\.\/\.\.\/\.\.\/\.\.\/partial-json\/dist\/index\.js/, "Bun partial-json compatibility patch was not applied");
 
   const host = await import(pathToFileURL(join(project, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "index.js")));
   const settingsManager = host.SettingsManager.inMemory({ packages: [installed] }, { projectTrusted: true });
@@ -63,8 +121,15 @@ try {
   let skills = loader.getSkills();
   assert.equal(extensions.errors.length, 0, JSON.stringify(extensions.errors));
   assert.equal(extensions.extensions.length, 1, "Prime did not discover exactly one package extension");
-  assert(extensions.extensions[0].tools.has("deepseek_harness"), "package extension did not register deepseek_harness");
-  assert(skills.skills.some(({ name }) => name === "deepseek-harness"), "Prime did not discover the deepseek-harness skill");
+  assert.equal(extensions.extensions[0].tools.size, 0, "context-sidecar extension must not replace Prime tools");
+  assert.equal((extensions.extensions[0].handlers.get("before_agent_start") ?? []).length, 1, "task-aware inheritance admission handler is missing");
+  assert((extensions.extensions[0].handlers.get("context") ?? []).length >= 2, "inheritance ordering/context projection handlers are missing");
+  for (const event of ["message_end", "model_select", "session_info_changed", "session_shutdown"]) {
+    assert((extensions.extensions[0].handlers.get(event) ?? []).length > 0, `${event} native lifecycle handler is missing`);
+  }
+  assert.equal(extensions.extensions[0].messageRenderers.size, 0, "status must not use a custom message/footer renderer");
+  assert(!skills.skills.some(({ name }) => name === "deepseek-harness"), "legacy delegation skill must not ship without its removed tool");
+  assert(skills.skills.some(({ name }) => name === "dsh-context"), "Prime did not discover the dsh-context skill");
   assert.equal(skills.diagnostics.length, 0, JSON.stringify(skills.diagnostics));
   const shutdownHandlers = extensions.extensions[0].handlers.get("session_shutdown") ?? [];
   assert(shutdownHandlers.length > 0, "extension did not register session_shutdown cleanup");
@@ -75,8 +140,9 @@ try {
   skills = loader.getSkills();
   assert.equal(extensions.errors.length, 0, "extension reload produced an error");
   assert.equal(extensions.extensions.length, 1, "extension was not retained across reload");
-  assert(skills.skills.some(({ name }) => name === "deepseek-harness"), "skill was not retained across reload");
-  console.log(`package smoke passed: ${actual.length} files; production install; extension + skill discovery; reload`);
+  assert(!skills.skills.some(({ name }) => name === "deepseek-harness"), "legacy delegation skill returned after reload");
+  assert(skills.skills.some(({ name }) => name === "dsh-context"), "context skill was not retained across reload");
+  console.log(`package smoke passed: ${actual.length} files; production install; extension + context skill discovery; reload`);
 } finally {
   await rm(temp, { recursive: true, force: true });
 }
