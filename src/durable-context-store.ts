@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import {
-  closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readSync,
+  chmodSync, closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readSync,
   realpathSync, readdirSync, renameSync, rmSync, statfsSync, statSync, unlinkSync, writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -196,6 +196,7 @@ function ensureNoSymlink(path: string): void {
 function privateDirectory(path: string): void {
   ensureNoSymlink(path); mkdirSync(path, { recursive: true, mode: 0o700 });
   const stat = lstatSync(path); if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`unsafe durable store directory: ${path}`);
+  chmodSync(path, 0o700);
 }
 function assertChild(root: string, path: string): void {
   const rel = relative(root, path);

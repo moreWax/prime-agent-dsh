@@ -4,7 +4,7 @@ import { appendFileSync } from "node:fs";
 import { once } from "node:events";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
-import { chmod, mkdtemp, mkdir, readFile, realpath, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, realpath, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -22,6 +22,17 @@ const input = (source: unknown[], effective = source, observedAt = 1) => {
   if (activeSession && source.length) appendFileSync(activeSession, source.map(value => JSON.stringify(value)).join("\n") + "\n");
   return { source, effective, observedAt, converterVersion: "converter-1", schemaVersion: "schema-1", branchId: "leaf" };
 };
+
+test("tightens pre-existing store directories to owner-only permissions", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "durable-context-mode-"));
+  const session = join(temporary, "prime.jsonl"); await writeFile(session, "", "utf8");
+  const root = join(temporary, "store"); await mkdir(root, { mode: 0o755 }); await chmod(root, 0o755);
+  new DurableContextStore({ root, binding: { sessionId: "session-a", primeSessionFile: session } });
+  for (const directory of [root, "objects", "commits", "heads", "quarantine", "indexes"].map((name) => name === root ? root : join(root, name))) {
+    assert.equal((await stat(directory)).mode & 0o777, 0o700, directory);
+  }
+  await rm(temporary, { recursive: true, force: true });
+});
 
 test("publishes immutable generations, proves append prefixes, and replays as a no-op", async () => {
   const { store } = await fixture();
