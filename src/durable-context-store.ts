@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import {
-  closeSync, constants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync,
+  closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readSync,
   realpathSync, readdirSync, renameSync, rmSync, statfsSync, statSync, unlinkSync, writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -71,8 +71,14 @@ export interface DerivedObject {
   readonly compatibility: CompatibilityView;
 }
 export type EffectiveProjectionRebuildReason = "initial" | "none" | "converter-change" | "source-diverged" | "source-append-effective-projection-change" | "effective-diverged";
+export interface PrimeIndexDiagnostics {
+  readonly mode: "full" | "tail" | "cache";
+  readonly bytesProcessed: number;
+  readonly linesProcessed: number;
+}
 export interface PublicationDiagnostics {
   readonly source: { readonly mode: "append" | "rebuild" | "noop"; readonly reused: number; readonly new: number; readonly reindexed: number };
+  readonly index?: PrimeIndexDiagnostics;
   readonly effective: { readonly reused: number; readonly new: number; readonly reindexed: number; readonly rebuildReason: EffectiveProjectionRebuildReason };
 }
 export interface DerivedCommit {
@@ -108,6 +114,8 @@ export interface DurableContextStoreOptions {
   readonly binding: StoreBinding;
   readonly recoveryScanLimit?: number;
   readonly maxObjectBytes?: number;
+  /** Maximum bytes allowed for the private, content-free Prime JSONL index. */
+  readonly maxIndexBytes?: number;
   /** Maximum bytes owned by the rebuildable derived store. */
   readonly maxStoreBytes?: number;
   /** Refuse a publication that would leave less filesystem space than this. */
@@ -205,43 +213,51 @@ function atomicWrite(path: string, contents: string, replace: boolean, beforeRen
 }
 function sleep(ms: number): Promise<void> { return new Promise((accept) => setTimeout(accept, ms)); }
 
-interface PrimeLine { offset: number; length: number; line: number; value: Json; digest: string; id?: string }
-function primeLines(path: string): PrimeLine[] {
-  const stat = lstatSync(path);
-  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("unsafe Prime session file");
-  const raw = readFileSync(path);
-  const lines: PrimeLine[] = [];
-  let start = 0, line = 1;
-  for (let cursor = 0; cursor <= raw.length; cursor++) {
-    if (cursor !== raw.length && raw[cursor] !== 0x0a) continue;
-    let end = cursor;
-    if (end > start && raw[end - 1] === 0x0d) end--;
-    if (end > start) {
-      const bytes = raw.subarray(start, end);
-      let value: unknown;
-      try { value = JSON.parse(bytes.toString("utf8")); } catch { throw new Error(`invalid Prime JSONL at line ${line}`); }
-      const normalized = JSON.parse(canonical(value)) as Json;
-      const record = object(normalized);
-      lines.push({ offset: start, length: end - start, line, value: normalized, digest: digest(normalized), ...(typeof record?.id === "string" ? { id: record.id } : {}) });
-    }
-    start = cursor + 1; line++;
-  }
-  const after = lstatSync(path);
-  if (after.size !== stat.size || after.mtimeMs !== stat.mtimeMs) throw new Error("Prime JSONL changed while locators were built");
-  return lines;
+interface PrimeLine { offset: number; length: number; line: number; digest: string; id?: string }
+interface PrimeIndexCursor {
+  version: "prime-agent-dsh/prime-jsonl-index-v1";
+  bindingDigest: string;
+  identity: { dev: number; ino: number };
+  byteOffset: number;
+  nextLine: number;
+  mtimeMs: number;
+  sourceDigest: string;
+  entries: PrimeLine[];
+  checksum: string;
 }
-function locateSource(path: string, source: readonly Json[]): SourceLocator[] {
-  const lines = primeLines(path);
-  const used = new Set<number>();
-  return source.map((entry, index) => {
-    const entryDigest = digest(entry); const entryRecord = object(entry); const entryId = typeof entryRecord?.id === "string" ? entryRecord.id : undefined;
-    let found = -1;
-    if (entryId !== undefined) found = lines.findIndex((line, n) => !used.has(n) && line.id === entryId && line.digest === entryDigest);
-    if (found < 0) found = lines.findIndex((line, n) => !used.has(n) && line.digest === entryDigest);
-    if (found < 0) throw new Error(`source entry ${index} is not present in the bound Prime JSONL`);
-    used.add(found); const line = lines[found];
-    return { index, byteOffset: line.offset, byteLength: line.length, line: line.line, entryDigest, ...(entryId === undefined ? {} : { entryId }) };
-  });
+
+function readRange(fd: number, offset: number, length: number): Buffer {
+  const result = Buffer.alloc(length); let done = 0;
+  while (done < length) { const count = readSync(fd, result, done, length - done, offset + done); if (count === 0) throw new Error("Prime JSONL changed while it was read"); done += count; }
+  return result;
+}
+function indexedDigest(entries: readonly PrimeLine[]): string {
+  return digest(entries.map(({ offset, length, line, digest: entryDigest, id }) => ({ offset, length, line, digest: entryDigest, ...(id === undefined ? {} : { id }) })));
+}
+function parsePrimeBytes(raw: Buffer, baseOffset: number, firstLine: number): { entries: PrimeLine[]; nextLine: number } {
+  const entries: PrimeLine[] = []; let start = 0, line = firstLine;
+  const add = (endExclusive: number): void => {
+    let end = endExclusive; if (end > start && raw[end - 1] === 0x0d) end--;
+    if (end > start) {
+      const bytes = raw.subarray(start, end); let value: unknown;
+      try { value = JSON.parse(bytes.toString("utf8")); } catch { throw new Error(`invalid Prime JSONL at line ${line}`); }
+      const normalized = JSON.parse(canonical(value)) as Json; const record = object(normalized);
+      entries.push({ offset: baseOffset + start, length: end - start, line, digest: digest(normalized), ...(typeof record?.id === "string" ? { id: record.id } : {}) });
+    }
+  };
+  for (let cursor = 0; cursor < raw.length; cursor++) {
+    if (raw[cursor] !== 0x0a) continue;
+    add(cursor); start = cursor + 1; line++;
+  }
+  if (start < raw.length) { add(raw.length); line++; }
+  return { entries, nextLine: line };
+}
+
+function validPrimeLine(value: unknown): value is PrimeLine {
+  const item = object(value);
+  return !!item && Number.isSafeInteger(item.offset) && (item.offset as number) >= 0
+    && safeInteger(item.length) && safeInteger(item.line) && typeof item.digest === "string" && SHA256.test(item.digest)
+    && (item.id === undefined || typeof item.id === "string");
 }
 
 /** A rebuildable, content-addressed publication store. Prime's JSONL remains authoritative. */
@@ -264,6 +280,7 @@ export class DurableContextStore {
   readonly bindingDigest: string;
   private readonly scanLimit: number;
   private readonly maxObjectBytes: number;
+  private readonly maxIndexBytes: number;
   private readonly maxStoreBytes: number;
   private readonly minFreeBytes: number;
   private readonly retainGenerations: number;
@@ -286,20 +303,21 @@ export class DurableContextStore {
     this.bindingDigest = digest({ sessionId: this.binding.sessionId, primeSessionFile: sessionFile });
     this.scanLimit = options.recoveryScanLimit ?? 128;
     this.maxObjectBytes = options.maxObjectBytes ?? 16 * 1024 * 1024;
+    this.maxIndexBytes = options.maxIndexBytes ?? 64 * 1024 * 1024;
     this.maxStoreBytes = options.maxStoreBytes ?? 64 * 1024 * 1024;
     this.minFreeBytes = options.minFreeBytes ?? 128 * 1024 * 1024;
     this.retainGenerations = options.retainGenerations ?? 2;
     this.lockTimeout = options.lockTimeoutMs ?? 10_000;
     this.staleLock = options.staleLockMs ?? 120_000;
     this.fault = options.fault; this.now = options.now ?? Date.now;
-    if (![this.scanLimit, this.maxObjectBytes, this.maxStoreBytes, this.minFreeBytes, this.retainGenerations, this.lockTimeout, this.staleLock].every((v) => Number.isSafeInteger(v) && v > 0)) throw new Error("store limits must be positive integers");
+    if (![this.scanLimit, this.maxObjectBytes, this.maxIndexBytes, this.maxStoreBytes, this.minFreeBytes, this.retainGenerations, this.lockTimeout, this.staleLock].every((v) => Number.isSafeInteger(v) && v > 0)) throw new Error("store limits must be positive integers");
     this.initialize();
   }
 
   private initialize(): void {
     privateDirectory(this.root);
     if (this.needsSchemaReset()) this.resetDerivedCache();
-    for (const name of ["objects", "commits", "heads", "quarantine"]) privateDirectory(join(this.root, name));
+    for (const name of ["objects", "commits", "heads", "quarantine", "indexes"]) privateDirectory(join(this.root, name));
     const bindingPath = join(this.root, "BINDING");
     const value = `${canonical({ version: DURABLE_STORE_VERSION, ...this.binding, bindingDigest: this.bindingDigest })}\n`;
     if (existsSync(bindingPath)) {
@@ -378,22 +396,27 @@ export class DurableContextStore {
         || !effectiveEntryDigests.every((item) => typeof item === "string" && SHA256.test(item))) return undefined;
       if ("effective" in o || !Array.isArray(o.sourceLocators) || !Array.isArray(o.effectiveReferences)
         || o.sourceLocators.length !== sourceEntryDigests.length || o.effectiveReferences.length !== effectiveEntryDigests.length) return undefined;
-      const file = readFileSync(this.binding.primeSessionFile);
-      const source: Json[] = [];
-      for (let index = 0; index < o.sourceLocators.length; index++) {
-        const locator = object(o.sourceLocators[index]);
-        if (!locator || locator.index !== index || !Number.isSafeInteger(locator.byteOffset) || (locator.byteOffset as number) < 0
-          || !safeInteger(locator.byteLength) || !safeInteger(locator.line) || locator.entryDigest !== sourceEntryDigests[index]
-          || (locator.entryId !== undefined && typeof locator.entryId !== "string")) return undefined;
-        const start = Number(locator.byteOffset), end = start + Number(locator.byteLength);
-        if (end > file.length || (start > 0 && file[start - 1] !== 0x0a)
-          || (end < file.length && file[end] !== 0x0a && !(file[end] === 0x0d && file[end + 1] === 0x0a))) return undefined;
-        const value = JSON.parse(file.subarray(start, end).toString("utf8")) as Json;
-        if (digest(value) !== locator.entryDigest) return undefined;
-        const valueId = object(value)?.id;
-        if (locator.entryId !== undefined && valueId !== locator.entryId) return undefined;
-        source.push(value);
-      }
+      const source: Json[] = []; const fd = openSync(this.binding.primeSessionFile, constants.O_RDONLY);
+      try {
+        const file = fstatSync(fd);
+        for (let index = 0; index < o.sourceLocators.length; index++) {
+          const locator = object(o.sourceLocators[index]);
+          if (!locator || locator.index !== index || !Number.isSafeInteger(locator.byteOffset) || (locator.byteOffset as number) < 0
+            || !safeInteger(locator.byteLength) || !safeInteger(locator.line) || locator.entryDigest !== sourceEntryDigests[index]
+            || (locator.entryId !== undefined && typeof locator.entryId !== "string")) return undefined;
+          const start = Number(locator.byteOffset), end = start + Number(locator.byteLength);
+          if (end > file.size || (start > 0 && readRange(fd, start - 1, 1)[0] !== 0x0a)) return undefined;
+          if (end < file.size) {
+            const boundary = readRange(fd, end, Math.min(2, file.size - end));
+            if (boundary[0] !== 0x0a && !(boundary[0] === 0x0d && boundary[1] === 0x0a)) return undefined;
+          }
+          const value = JSON.parse(readRange(fd, start, Number(locator.byteLength)).toString("utf8")) as Json;
+          if (digest(value) !== locator.entryDigest) return undefined;
+          const valueId = object(value)?.id;
+          if (locator.entryId !== undefined && valueId !== locator.entryId) return undefined;
+          source.push(value);
+        }
+      } finally { closeSync(fd); }
       if (digest(source) !== o.sourceDigest) return undefined;
       for (let index = 0; index < o.effectiveReferences.length; index++) {
         const reference = object(o.effectiveReferences[index]);
@@ -472,6 +495,93 @@ export class DurableContextStore {
     atomicWrite(path, contents, false, undefined, syncAfter);
   }
 
+  private readPrimeIndex(): PrimeIndexCursor | undefined {
+    const path = join(this.root, "indexes", "prime-jsonl.json");
+    try {
+      const raw = safeFileText(path, this.maxIndexBytes); const parsed = object(JSON.parse(raw));
+      if (!parsed || parsed.version !== "prime-agent-dsh/prime-jsonl-index-v1" || parsed.bindingDigest !== this.bindingDigest
+        || !object(parsed.identity) || !Number.isSafeInteger((parsed.identity as Record<string, unknown>).dev)
+        || !Number.isSafeInteger((parsed.identity as Record<string, unknown>).ino)
+        || !Number.isSafeInteger(parsed.byteOffset) || (parsed.byteOffset as number) < 0
+        || !safeInteger(parsed.nextLine) || typeof parsed.mtimeMs !== "number" || !Number.isFinite(parsed.mtimeMs)
+        || typeof parsed.sourceDigest !== "string" || !SHA256.test(parsed.sourceDigest)
+        || !Array.isArray(parsed.entries) || !parsed.entries.every(validPrimeLine)
+        || typeof parsed.checksum !== "string" || !SHA256.test(parsed.checksum)) return undefined;
+      const { checksum, ...unsigned } = parsed;
+      if (digest(unsigned) !== checksum || indexedDigest(parsed.entries) !== parsed.sourceDigest) return undefined;
+      const entries = parsed.entries;
+      let previousEnd = 0, previousLine = 0;
+      for (const entry of entries) {
+        if (entry.offset < previousEnd || entry.line <= previousLine || entry.offset + entry.length > Number(parsed.byteOffset)) return undefined;
+        previousEnd = entry.offset + entry.length; previousLine = entry.line;
+      }
+      return parsed as unknown as PrimeIndexCursor;
+    } catch { return undefined; }
+  }
+
+  private primeIndex(): { entries: PrimeLine[]; diagnostics: PrimeIndexDiagnostics } {
+    const path = this.binding.primeSessionFile; const fd = openSync(path, constants.O_RDONLY);
+    try {
+      const before = fstatSync(fd);
+      if (!before.isFile() || !Number.isSafeInteger(before.size)) throw new Error("unsafe or oversized Prime session file");
+      const prior = this.readPrimeIndex();
+      const identityMatches = !!prior && prior.identity.dev === before.dev && prior.identity.ino === before.ino;
+      let mode: PrimeIndexDiagnostics["mode"] = "full", offset = 0, firstLine = 1, entries: PrimeLine[] = [];
+      if (identityMatches && prior.byteOffset === before.size && prior.mtimeMs === before.mtimeMs) {
+        const after = fstatSync(fd);
+        if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.mtimeMs !== before.mtimeMs) {
+          throw new Error("Prime JSONL changed while locators were built");
+        }
+        return { entries: prior.entries, diagnostics: { mode: "cache", bytesProcessed: 0, linesProcessed: 0 } };
+      }
+      if (identityMatches && prior.byteOffset < before.size) {
+        const endedAtLineBoundary = prior.byteOffset === 0 || readRange(fd, prior.byteOffset - 1, 1)[0] === 0x0a;
+        if (endedAtLineBoundary) { mode = "tail"; offset = prior.byteOffset; firstLine = prior.nextLine; entries = prior.entries.slice(); }
+      }
+      const raw = readRange(fd, offset, before.size - offset);
+      const parsed = parsePrimeBytes(raw, offset, firstLine); entries.push(...parsed.entries);
+      const after = fstatSync(fd);
+      if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.mtimeMs !== before.mtimeMs) {
+        throw new Error("Prime JSONL changed while locators were built");
+      }
+      const unsigned = {
+        version: "prime-agent-dsh/prime-jsonl-index-v1" as const, bindingDigest: this.bindingDigest,
+        identity: { dev: before.dev, ino: before.ino }, byteOffset: before.size, nextLine: parsed.nextLine,
+        mtimeMs: before.mtimeMs, sourceDigest: indexedDigest(entries), entries,
+      };
+      const cursor: PrimeIndexCursor = { ...unsigned, checksum: digest(unsigned) };
+      const text = `${canonical(cursor)}\n`;
+      if (Buffer.byteLength(text, "utf8") > this.maxIndexBytes) throw new DurablePublicationUnavailableError(`Prime JSONL index exceeds ${this.maxIndexBytes} bytes`);
+      atomicWrite(join(this.root, "indexes", "prime-jsonl.json"), text, true);
+      return { entries, diagnostics: { mode, bytesProcessed: raw.length, linesProcessed: parsed.entries.length } };
+    } finally { closeSync(fd); }
+  }
+
+  private locateSource(source: readonly Json[]): { locators: SourceLocator[]; diagnostics: PrimeIndexDiagnostics } {
+    let indexed = this.primeIndex();
+    const locate = (): SourceLocator[] | undefined => {
+      const used = new Set<number>(); const result: SourceLocator[] = [];
+      for (let index = 0; index < source.length; index++) {
+        const entry = source[index]!; const entryDigest = digest(entry); const entryRecord = object(entry);
+        const entryId = typeof entryRecord?.id === "string" ? entryRecord.id : undefined;
+        let found = -1;
+        if (entryId !== undefined) found = indexed.entries.findIndex((line, n) => !used.has(n) && line.id === entryId && line.digest === entryDigest);
+        if (found < 0) found = indexed.entries.findIndex((line, n) => !used.has(n) && line.digest === entryDigest);
+        if (found < 0) return undefined;
+        used.add(found); const line = indexed.entries[found];
+        result.push({ index, byteOffset: line.offset, byteLength: line.length, line: line.line, entryDigest, ...(entryId === undefined ? {} : { entryId }) });
+      }
+      return result;
+    };
+    let locators = locate();
+    if (!locators && indexed.diagnostics.mode !== "full") {
+      try { unlinkSync(join(this.root, "indexes", "prime-jsonl.json")); } catch { /* absent index */ }
+      indexed = this.primeIndex(); locators = locate();
+    }
+    if (!locators) throw new Error("source entry is not present in the bound Prime JSONL");
+    return { locators, diagnostics: indexed.diagnostics };
+  }
+
   private publishLocked(input: PublishInput): PublishResult {
     if (!input.converterVersion || !input.schemaVersion) throw new Error("converterVersion and schemaVersion are required");
     const source = input.source.map((item) => JSON.parse(canonical(item)) as Json);
@@ -479,6 +589,8 @@ export class DurableContextStore {
     const sourceDigest = digest(source), effectiveDigest = digest(effective);
     const sourceEntryDigests = source.map(digest);
     const effectiveEntryDigests = effective.map(digest);
+    const located = this.locateSource(source);
+    const sourceLocators = located.locators;
     const allRecovered = this.recoveredGenerations();
     const branchId = input.branchId ?? "root";
     const isAncestor = (value: RecoveredGeneration): boolean => value.object.sourceEntryDigests.length <= sourceEntryDigests.length
@@ -496,6 +608,7 @@ export class DurableContextStore {
       && prior.object.compatibility.branchId === branchId;
     if (same) return { ...prior, mode: "noop", publication: {
       source: { mode: "noop", reused: sourceEntryDigests.length, new: 0, reindexed: 0 },
+      index: located.diagnostics,
       effective: { reused: effectiveEntryDigests.length, new: 0, reindexed: 0, rebuildReason: "none" },
     } };
     let prefix = 0;
@@ -519,11 +632,11 @@ export class DurableContextStore {
       : effectivePrefix < prior.object.effectiveEntryDigests.length ? "effective-diverged" : "none";
     const publication: PublicationDiagnostics = {
       source: { mode: sourceAppend ? "append" : "rebuild", ...sourceCounts },
+      index: located.diagnostics,
       effective: { ...effectiveCounts, rebuildReason: effectiveReason },
     };
     // V3 stores only verified references into Prime JSONL. Compatibility input is
     // deliberately ignored because it may contain cropped copies of secret text.
-    const sourceLocators = locateSource(this.binding.primeSessionFile, source);
     if (input.effectiveSourceIndexes && input.effectiveSourceIndexes.length !== effective.length) {
       throw new Error("effective source index count does not match effective messages");
     }
