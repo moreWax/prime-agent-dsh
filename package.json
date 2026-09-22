@@ -94,7 +94,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/js-yaml": "^4.0.9",
-    "@types/node": "^22.0.0",
+    "@types/node": "^26.6.2",
     "eslint": "^10.9.1",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0",
