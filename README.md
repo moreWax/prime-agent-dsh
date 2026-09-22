@@ -4,6 +4,8 @@ A self-contained Prime Agent package that uses selected DeepSeek Harness context
 
 > DeepSeek Harness `0.1.6-alpha.2` is a developer preview. This package pins compatible DSH and Cordis versions exactly.
 
+Current package version: **0.2.0**. Runtime target: **Prime Agent 0.9.5 or newer** (`@earendil-works/pi-coding-agent >=0.86.1`).
+
 ## Architecture
 
 Prime Agent is the sole authority for:
@@ -26,7 +28,8 @@ See [`docs/single-window-cache-architecture.md`](docs/single-window-cache-archit
 - Immutable snapshots tied to the exact Prime branch leaf and revision.
 - Bounded transcript search, message reads, and private artifacts through Python.
 - Provider-reported input/output/cache token metrics.
-- Native Prime `belowEditor` cache-rate widget for daemon-attached chat; no custom footer or styling.
+- Native Prime cache-rate widget with host-controlled placement; no custom footer, border, or styling.
+- Incremental append-only Prime JSONL tail indexing with safe full rebuild on replacement, truncation, corruption, or mismatch.
 - Explicit durable context admission through recorded IPython results.
 - Automatic bounded parent-to-child evidence capsules through stock Prime lifecycle hooks.
 - Expiring, bounded parent-to-child context grants for explicit larger selections.
@@ -64,6 +67,18 @@ prime-agent -e ./extensions/index.ts
 - `/dsh off` — explicitly hide cache-rate text.
 
 The command changes display only. Context indexing and provider cache measurement continue automatically.
+
+The displayed text has two provider-reported rates:
+
+```text
+DSH cache · turn 99.7% · session 97.1%
+```
+
+- `turn` is the latest completed assistant request: `cacheRead / (input + cacheRead)`.
+- `session` is the same ratio over the canonical active Prime branch.
+- `—` means the provider did not report enough usage data.
+
+Prime controls the widget's final placement. In fullscreen mode, extension widgets live in the conversation scroll region rather than Prime's fixed top bar or prompt dock.
 
 ## Python context objects
 
@@ -143,6 +158,7 @@ session-artifacts/<session>/dsh-context/
   objects/<sha256>.json         # immutable derived objects
   commits/<sha256>.json         # immutable generation commits
   heads/<generation>-<sha256>   # recovery authority
+  indexes/prime-jsonl.json        # content-free incremental offset/digest cursor
   artifacts/<sha256>.md
   grants/<capability-token>.json
 ../dsh-inheritance/
@@ -150,7 +166,7 @@ session-artifacts/<session>/dsh-context/
   generations/<state>-<sha256>/ # immutable pin/payload/admission set
 ```
 
-Prime JSONL is the sole canonical history. Each lifecycle sync publishes a transactional, content-addressed generation. Recovery scans immutable heads and validates commits and objects; `CURRENT` and `manifest.json` are replaceable hints/views. A corrupt or interrupted publication therefore falls back to the newest valid retained generation. Append mode is used only after exact source and effective prefix proof; forks, history replacement, and other rewrites rebuild. `session_compact` is observed only to resync after Prime has replaced history.
+Prime JSONL is the sole canonical history. The private incremental index stores only file identity, offsets, lengths, line numbers, entry IDs, and canonical digests; it never stores message bodies. Normal growth parses only newly appended bytes. Each lifecycle sync publishes a transactional, content-addressed generation. Recovery scans immutable heads and validates commits and objects; `CURRENT` and `manifest.json` are replaceable hints/views. A corrupt or interrupted publication therefore falls back to the newest valid retained generation. Append mode is used only after exact source and effective prefix proof; forks, history replacement, and other rewrites rebuild. `session_compact` is observed only to resync after Prime has replaced history.
 
 Derived checkpoints are immutable while retained, but retention is bounded to the two newest valid generations. Old heads are retired before their commits, objects, and compatibility manifests. Explicit cursors to retired snapshots report that the snapshot is unavailable. User `artifacts/` and `grants/` are never collected. Publication also stops for that session when the 64 MiB derived-store quota or 128 MiB free-space reserve would be crossed. Prime continues normally. After freeing space, restart Prime Agent to re-arm publication.
 
