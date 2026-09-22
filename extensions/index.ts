@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ContextUsage, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { readdirSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import { contextObjectRoot } from "../src/context-objects.js";
@@ -41,11 +41,27 @@ function recentSiblingSession(ctx: ExtensionContext): { id: string; ageMinutes: 
 
 const CACHE_STATUS_KEY = "prime-agent-dsh-cache";
 
+export function compactTokenCount(value: number): string {
+  if (!Number.isFinite(value) || value < 0) return "—";
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${Math.round(value / 1_000)}K`;
+  return String(Math.round(value));
+}
+
+export function cacheFooterText(efficiency: number | null | undefined, usage: ContextUsage | undefined): string {
+  const cache = efficiency === null || efficiency === undefined ? "—" : `${(efficiency * 100).toFixed(1)}%`;
+  const tokens = usage?.tokens;
+  const window = usage?.contextWindow;
+  const context = tokens === null || tokens === undefined || window === undefined
+    ? "—"
+    : `${compactTokenCount(tokens)}/${compactTokenCount(window)}`;
+  const percent = usage?.percent === null || usage?.percent === undefined ? "—" : `${usage.percent.toFixed(1)}%`;
+  return `DSH cache ${cache} · ctx ${context} · ${percent}`;
+}
+
 function updateCacheStatus(ctx: ExtensionContext, loader: RecursiveContextLoader): void {
   if (!ctx.hasUI) return;
-  const efficiency = loader.status(ctx)?.latestCache?.efficiency;
-  const value = efficiency === null || efficiency === undefined ? "—" : `${(efficiency * 100).toFixed(1)}%`;
-  ctx.ui.setStatus(CACHE_STATUS_KEY, `DSH cache ${value}`);
+  ctx.ui.setStatus(CACHE_STATUS_KEY, cacheFooterText(loader.status(ctx)?.latestCache?.efficiency, ctx.getContextUsage()));
 }
 
 /**
