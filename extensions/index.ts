@@ -47,7 +47,6 @@ export function cacheFooterText(efficiency: number | null | undefined): string {
 }
 
 function updateCacheStatus(ctx: ExtensionContext, loader: RecursiveContextLoader): void {
-  if (!ctx.hasUI) return;
   ctx.ui.setStatus(CACHE_STATUS_KEY, cacheFooterText(loader.status(ctx)?.latestCache?.efficiency));
 }
 
@@ -85,7 +84,7 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
   pi.on("context", (_event, ctx) => { updateCacheStatus(ctx, contextLoader); });
   pi.on("session_shutdown", async (_event, ctx) => {
     await Promise.resolve();
-    if (ctx.hasUI) ctx.ui.setStatus(CACHE_STATUS_KEY, undefined);
+    ctx?.ui?.setStatus?.(CACHE_STATUS_KEY, undefined);
   });
 
   pi.registerCommand("dsh-session", {
