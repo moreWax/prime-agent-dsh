@@ -60,15 +60,26 @@ export function claimExtensionApi(pi: ExtensionAPI): boolean {
   return true;
 }
 
-export function cacheFooterText(efficiency: number | null | undefined): string {
-  const cache = efficiency === null || efficiency === undefined ? "—" : `${(efficiency * 100).toFixed(1)}%`;
-  return `DSH cache ${cache}`;
+function efficiencyText(value: number | null | undefined): string {
+  return value === null || value === undefined ? "—" : `${(value * 100).toFixed(1)}%`;
+}
+
+export function cacheFooterText(turnEfficiency: number | null | undefined, sessionEfficiency: number | null | undefined): string {
+  return `DSH cache · turn ${efficiencyText(turnEfficiency)} · session ${efficiencyText(sessionEfficiency)}`;
+}
+
+function canonicalSessionEfficiency(scope: ReturnType<RecursiveContextLoader["status"]>): number | null {
+  const metrics = scope?.lastSync?.manifest.metrics;
+  if (!metrics) return scope?.cache?.efficiency ?? null;
+  const total = metrics.inputTokens + metrics.cacheReadTokens;
+  return total > 0 ? metrics.cacheReadTokens / total : null;
 }
 
 function updateCacheStatus(ctx: ExtensionContext, loader: RecursiveContextLoader): void {
-  const text = cacheFooterText(loader.status(ctx)?.latestCache?.efficiency);
+  const scope = loader.status(ctx);
+  const text = cacheFooterText(scope?.latestCache?.efficiency, canonicalSessionEfficiency(scope));
   ctx.ui.setStatus(CACHE_STATUS_KEY, text);
-  ctx.ui.setWidget(CACHE_WIDGET_KEY, [text], { placement: "belowEditor" });
+  ctx.ui.setWidget(CACHE_WIDGET_KEY, [text], { placement: "aboveEditor" });
 }
 
 function syncAge(scope: ReturnType<RecursiveContextLoader["status"]>): string {

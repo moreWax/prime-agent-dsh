@@ -77,14 +77,14 @@ test("daemon-shaped native UI receives finalized cache usage and lifecycle re-em
       stopReason: "stop", timestamp: Date.now(),
     },
   });
-  assert.deepEqual(fixture.statuses.at(-1), ["prime-agent-dsh-cache", "DSH cache 90.0%"]);
-  assert.deepEqual(fixture.widgets.at(-1), ["prime-agent-dsh-cache-widget", ["DSH cache 90.0%"], { placement: "belowEditor" }]);
+  assert.deepEqual(fixture.statuses.at(-1), ["prime-agent-dsh-cache", "DSH cache · turn 90.0% · session 90.0%"]);
+  assert.deepEqual(fixture.widgets.at(-1), ["prime-agent-dsh-cache-widget", ["DSH cache · turn 90.0% · session 90.0%"], { placement: "aboveEditor" }]);
 
   const beforeLifecycle = fixture.statuses.length;
   await emit(fixture, "model_select", { source: "restore", model: fixture.context.model, previousModel: undefined });
   await emit(fixture, "session_info_changed", { name: "attached-through-daemon" });
   assert.equal(fixture.statuses.length, beforeLifecycle + 2);
-  assert.deepEqual(fixture.statuses.at(-1), ["prime-agent-dsh-cache", "DSH cache 90.0%"], "lifecycle emission must retain finalized usage");
+  assert.deepEqual(fixture.statuses.at(-1), ["prime-agent-dsh-cache", "DSH cache · turn 90.0% · session 90.0%"], "lifecycle emission must retain finalized usage");
   const beforeUser = fixture.statuses.length;
   await emit(fixture, "message_end", { message: { role: "user", content: "hello", timestamp: Date.now() } });
   assert.equal(fixture.statuses.length, beforeUser, "non-assistant messages do not change cache status");
