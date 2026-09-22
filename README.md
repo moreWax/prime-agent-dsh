@@ -6,7 +6,7 @@
 
 A context sidecar for Prime Agent. It turns the active Prime branch into a searchable, rebuildable DeepSeek Harness (DSH) projection, exposes bounded context tools in Python, and reports provider cache use. Prime remains the only agent loop and the only session authority.
 
-> **Not published to npm.** Install from this GitHub repository or a local checkout. The pinned DeepSeek Harness `0.1.6-alpha.2` dependencies are also developer previews.
+> The pinned DeepSeek Harness `0.1.6-alpha.2` dependencies are developer previews. Review the security and compatibility notes before deployment.
 
 ## Why use it?
 
@@ -21,14 +21,10 @@ A context sidecar for Prime Agent. It turns the active Prime branch into a searc
 Requirements, source installation, verification, upgrades, removal, and troubleshooting are in **[Getting started](docs/getting-started.md)**.
 
 ```bash
-git clone https://github.com/moreWax/prime-agent-dsh.git
-cd prime-agent-dsh
-npm install
-npm run release:check
-prime-agent package install "$PWD"
+prime-agent package install npm:prime-agent-dsh
 ```
 
-Restart Prime Agent after installation. Then run `/dsh` and try `dsh_context.current()` in IPython.
+Restart Prime Agent after installation. Then run `/dsh` and try `dsh_context.current()` in IPython. Source and project-local installation instructions are in the getting-started guide.
 
 ## Architecture invariants
 
@@ -56,7 +52,7 @@ The package does not ship a DSH `AgentLoop`, provider wrapper, ACP delegation pa
 | Shadow telemetry | Optional | Diagnostic only; never changes provider context. |
 | DSH-driven compaction | Not included | Prime alone decides and performs compaction. |
 | DSH agent loop or tools | Not included | Would create a second execution authority. |
-| npm installation | Not available | Source installation only for this release. |
+| npm installation | Available | `prime-agent package install npm:prime-agent-dsh` |
 
 ## Python API at a glance
 
@@ -99,7 +95,7 @@ For grants and API rules, see [Getting started](docs/getting-started.md#use-the-
 
 ## Project status
 
-`0.2.0` is a developer preview. The Prime integration, storage formats, and Python API may change before a stable release. The test suite covers the documented core paths, but this package is not a security boundary against another process running as the same OS user.
+`0.2.1` is a developer preview. The Prime integration, storage formats, and Python API may change before a stable release. The test suite covers the documented core paths, but this package is not a security boundary against another process running as the same OS user.
 
 The current runtime target is Prime Agent `0.9.5` or newer (`@earendil-works/pi-coding-agent >=0.86.1`). See the [roadmap](ROADMAP.md) for direction rather than release promises.
 

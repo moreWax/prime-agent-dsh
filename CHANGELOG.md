@@ -10,6 +10,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Added production-oriented installation, support, contribution, conduct, roadmap, and release documentation.
 
+## 0.2.1 - 2026-09-22
+
+### Changed
+
+- Made npm installation the primary getting-started path after the verified v0.2.0 publication.
+- Updated GitHub Actions to Node 24-based action runtimes.
+
 ## 0.2.0 - 2026-09-21
 
 ### Added

@@ -104,10 +104,10 @@ test("bare dsh toggles cache text and reports the resulting state", async () => 
   await emit(fixture, "session_start", { reason: "startup" });
   await fixture.commands.get("dsh")?.handler("", fixture.context);
   assert.deepEqual(fixture.widgets.at(-1), ["prime-agent-dsh-cache-widget", undefined, undefined]);
-  assert.match(fixture.notices.at(-1)?.[0] ?? "", /DSH 0\.2\.0 · cache text OFF · indexing ACTIVE/);
+  assert.match(fixture.notices.at(-1)?.[0] ?? "", /DSH 0\.2\.1 · cache text OFF · indexing ACTIVE/);
   await fixture.commands.get("dsh")?.handler("", fixture.context);
   assert.deepEqual(fixture.widgets.at(-1), ["prime-agent-dsh-cache-widget", ["DSH cache · turn — · session —"], { placement: "aboveEditor" }]);
-  assert.match(fixture.notices.at(-1)?.[0] ?? "", /DSH 0\.2\.0 · cache text ON · indexing ACTIVE/);
+  assert.match(fixture.notices.at(-1)?.[0] ?? "", /DSH 0\.2\.1 · cache text ON · indexing ACTIVE/);
 });
 
 test("explicit dsh on and off are deterministic", async () => {

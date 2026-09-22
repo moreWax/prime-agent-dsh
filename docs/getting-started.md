@@ -1,6 +1,6 @@
 # Getting started
 
-This guide installs `prime-agent-dsh` from source. Version 0.2.0 is **not published to npm**.
+This guide covers npm, GitHub, local, and project-scoped installation for `prime-agent-dsh` 0.2.1.
 
 ## Requirements
 
@@ -21,6 +21,20 @@ git --version
 
 The package declares `@earendil-works/pi-coding-agent >=0.86.1` and related Prime packages as peer dependencies. `npm install` installs the pinned DSH runtime dependencies and development tools.
 
+## Install from npm
+
+```bash
+prime-agent package install npm:prime-agent-dsh
+```
+
+Restart Prime Agent after installation, then continue with [Restart and verify](#restart-and-verify).
+
+Update an npm installation with:
+
+```bash
+prime-agent package update npm:prime-agent-dsh
+```
+
 ## Install from GitHub
 
 Clone the repository, validate the exact checkout, and register that checkout with Prime:
@@ -33,7 +47,7 @@ npm run release:check
 prime-agent package install "$PWD"
 ```
 
-Use a tagged release or reviewed commit when one is available. The default branch can contain unreleased work. Do not use `npm install -g prime-agent-dsh` or `npm install prime-agent-dsh`; no npm package is published for this release.
+Use a tagged release or reviewed commit when one is available. The default branch can contain unreleased work. Use Prime's package command rather than installing the package globally with npm.
 
 ## Install for one project
 
@@ -171,7 +185,7 @@ prime-agent package install "$PWD"
 
 If the package was registered locally, run the last command from the target project with `--local` and the absolute checkout path. Restart Prime afterward. `prime-agent package update [source]` exists for package sources that Prime can update, but a manual checkout update makes the reviewed revision explicit.
 
-No manual data migration is required for 0.2.0. On first publication, it removes legacy rebuildable snapshot layouts and prunes old derived generations under the writer lock. It does not change Prime JSONL, user artifacts, grants, or inheritance data.
+No manual data migration is required for 0.2.x. On first publication, it removes legacy rebuildable snapshot layouts and prunes old derived generations under the writer lock. It does not change Prime JSONL, user artifacts, grants, or inheritance data.
 
 ## Uninstall
 
