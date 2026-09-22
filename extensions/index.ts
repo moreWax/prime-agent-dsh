@@ -38,7 +38,7 @@ function recentSiblingSession(ctx: ExtensionContext): { id: string; ageMinutes: 
   }
 }
 
-export const DSH_VERSION = "0.2.0";
+export const DSH_VERSION = "0.2.1";
 const CACHE_STATUS_KEY = "prime-agent-dsh-cache";
 const CACHE_WIDGET_KEY = "prime-agent-dsh-cache-widget";
 const INSTALLS_KEY = Symbol.for("prime-agent-dsh.installs.v1");

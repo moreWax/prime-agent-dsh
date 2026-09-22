@@ -84,7 +84,7 @@ try {
 
   const installed = join(project, "node_modules", "prime-agent-dsh");
   const manifest = JSON.parse(await readFile(join(installed, "package.json"), "utf8"));
-  assert.equal(manifest.version, "0.2.0", "packed plugin version is stale");
+  assert.equal(manifest.version, "0.2.1", "packed plugin version is stale");
   assert.deepEqual(manifest.repository, { type: "git", url: `git+${repositoryUrl}.git` });
   assert.equal(manifest.homepage, `${repositoryUrl}#readme`);
   assert.deepEqual(manifest.bugs, { url: `${repositoryUrl}/issues` });

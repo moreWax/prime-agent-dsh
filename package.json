@@ -1,6 +1,6 @@
 {
   "name": "prime-agent-dsh",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "DeepSeek Harness context sidecar and Python context objects for Prime Agent.",
   "keywords": [
     "prime-agent",

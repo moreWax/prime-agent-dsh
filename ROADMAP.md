@@ -31,7 +31,7 @@ These are architecture constraints, not deferred features.
 - Establish a repeatable source release process and signed or otherwise verifiable release artifacts where practical.
 - Publish a tested compatibility matrix.
 - Complete privacy and threat-model review for artifacts, grants, inheritance, and shadow telemetry.
-- Decide whether npm publication is useful and supportable. Until that decision and a verified release occur, installation remains source-only.
+- Maintain verified npm provenance, GitHub releases, and tested install/update paths.
 
 ## Possible later work
 
