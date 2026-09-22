@@ -1,6 +1,6 @@
 # Getting started
 
-This guide covers npm, GitHub, local, and project-scoped installation for `prime-agent-dsh` 0.2.1.
+This guide covers npm, GitHub, local, and project-scoped installation for `prime-agent-dsh` 0.2.2.
 
 ## Requirements
 
@@ -106,11 +106,13 @@ Cache rates can remain `—` when the provider does not report enough usage data
 /dsh
 /dsh on
 /dsh off
+/dsh help
 ```
 
 - `/dsh` toggles the native cache-rate text and reports the resulting state.
 - `/dsh on` shows it.
 - `/dsh off` hides it.
+- `/dsh help` lists the available controls and explains that indexing remains active.
 
 The command controls display only. Projection, indexing, and provider cache measurement continue while the display is hidden. A typical provider-reported value is:
 

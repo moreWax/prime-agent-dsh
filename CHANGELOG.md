@@ -10,6 +10,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Added production-oriented installation, support, contribution, conduct, roadmap, and release documentation.
 
+## 0.2.2 - 2026-09-22
+
+### Added
+
+- Added `/dsh help` for concise command and behavior guidance.
+
 ## 0.2.1 - 2026-09-22
 
 ### Changed

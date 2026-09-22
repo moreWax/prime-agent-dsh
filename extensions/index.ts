@@ -38,7 +38,7 @@ function recentSiblingSession(ctx: ExtensionContext): { id: string; ageMinutes: 
   }
 }
 
-export const DSH_VERSION = "0.2.1";
+export const DSH_VERSION = "0.2.2";
 const CACHE_STATUS_KEY = "prime-agent-dsh-cache";
 const CACHE_WIDGET_KEY = "prime-agent-dsh-cache-widget";
 const INSTALLS_KEY = Symbol.for("prime-agent-dsh.installs.v1");
@@ -137,15 +137,26 @@ export default function deepSeekHarnessExtension(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("dsh", {
-    description: "Toggle DSH cache-rate text and report the resulting state",
+    description: "Toggle DSH cache-rate text, set visibility, or show help",
     handler: async (args, ctx) => {
       await Promise.resolve();
       const action = args.trim().toLowerCase();
+      if (action === "help") {
+        ctx.ui.notify([
+          "DSH commands:",
+          "/dsh — toggle cache-rate text and report the resulting state",
+          "/dsh on — show cache-rate text",
+          "/dsh off — hide cache-rate text",
+          "/dsh help — show this help",
+          "Display controls do not disable indexing or provider cache measurement.",
+        ].join("\n"), "info");
+        return;
+      }
       if (action === "") showCacheDisplay = !showCacheDisplay;
       else if (action === "on") showCacheDisplay = true;
       else if (action === "off") showCacheDisplay = false;
       else {
-        ctx.ui.notify("Usage: /dsh [on|off]", "warning");
+        ctx.ui.notify("Usage: /dsh [on|off|help]", "warning");
         return;
       }
       refreshCacheDisplay(ctx);
