@@ -48,7 +48,7 @@ The package does not ship a DSH `AgentLoop`, provider wrapper, ACP delegation pa
 | Native RLM inheritance | Available | Bounded untrusted evidence through Prime 0.9.5 lifecycle hooks. |
 | Explicit parent-to-child grants | Available | Bounded, read-only, expiring capabilities. |
 | Provider cache metrics | Available when reported | No cache hit is inferred if the provider omits usage fields. |
-| `/dsh` display toggle and help | Available | `/dsh`, `/dsh on`, `/dsh off`, `/dsh help`; indexing continues. |
+| `/dsh` display toggle and help | Available | `/dsh`, `/dsh show`, `/dsh hide`, `/dsh help`; indexing continues. |
 | Shadow telemetry | Optional | Diagnostic only; never changes provider context. |
 | DSH-driven compaction | Not included | Prime alone decides and performs compaction. |
 | DSH agent loop or tools | Not included | Would create a second execution authority. |
@@ -95,7 +95,7 @@ For grants and API rules, see [Getting started](docs/getting-started.md#use-the-
 
 ## Project status
 
-`0.2.2` is a developer preview. The Prime integration, storage formats, and Python API may change before a stable release. The test suite covers the documented core paths, but this package is not a security boundary against another process running as the same OS user.
+`0.2.3` is a developer preview. The Prime integration, storage formats, and Python API may change before a stable release. The test suite covers the documented core paths, but this package is not a security boundary against another process running as the same OS user.
 
 The current runtime target is Prime Agent `0.9.5` or newer (`@earendil-works/pi-coding-agent >=0.86.1`). See the [roadmap](ROADMAP.md) for direction rather than release promises.
 
