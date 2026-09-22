@@ -38,7 +38,7 @@ function context(): ExtensionContext {
     cwd: "/workspace",
     hasUI: false,
     model: undefined,
-    ui: { notify() {}, setStatus() {} },
+    ui: { notify() {}, setStatus() {}, setWidget() {} },
     sessionManager: {
       getSessionId: () => "root",
       getSessionFile: () => undefined,
