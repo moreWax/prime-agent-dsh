@@ -10,6 +10,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Added production-oriented installation, support, contribution, conduct, roadmap, and release documentation.
 
+## 0.2.3 - 2026-09-22
+
+### Changed
+
+- Renamed cache display controls from `/dsh on|off` to `/dsh show|hide` for accurate presentation semantics.
+
 ## 0.2.2 - 2026-09-22
 
 ### Added

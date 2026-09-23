@@ -104,20 +104,20 @@ test("bare dsh toggles cache text and reports the resulting state", async () => 
   await emit(fixture, "session_start", { reason: "startup" });
   await fixture.commands.get("dsh")?.handler("", fixture.context);
   assert.deepEqual(fixture.widgets.at(-1), ["prime-agent-dsh-cache-widget", undefined, undefined]);
-  assert.match(fixture.notices.at(-1)?.[0] ?? "", /DSH 0\.2\.2 · cache text OFF · indexing ACTIVE/);
+  assert.match(fixture.notices.at(-1)?.[0] ?? "", /DSH 0\.2\.3 · cache text OFF · indexing ACTIVE/);
   await fixture.commands.get("dsh")?.handler("", fixture.context);
   assert.deepEqual(fixture.widgets.at(-1), ["prime-agent-dsh-cache-widget", ["DSH cache · turn — · session —"], { placement: "aboveEditor" }]);
-  assert.match(fixture.notices.at(-1)?.[0] ?? "", /DSH 0\.2\.2 · cache text ON · indexing ACTIVE/);
+  assert.match(fixture.notices.at(-1)?.[0] ?? "", /DSH 0\.2\.3 · cache text ON · indexing ACTIVE/);
 });
 
-test("explicit dsh on and off are deterministic", async () => {
+test("explicit dsh show and hide are deterministic", async () => {
   const fixture = daemonFixture();
   extension(fixture.pi);
   await emit(fixture, "session_start", { reason: "startup" });
-  await fixture.commands.get("dsh")?.handler("off", fixture.context);
-  await fixture.commands.get("dsh")?.handler("off", fixture.context);
+  await fixture.commands.get("dsh")?.handler("hide", fixture.context);
+  await fixture.commands.get("dsh")?.handler("hide", fixture.context);
   assert.match(fixture.notices.at(-1)?.[0] ?? "", /cache text OFF/);
-  await fixture.commands.get("dsh")?.handler("on", fixture.context);
+  await fixture.commands.get("dsh")?.handler("show", fixture.context);
   assert.match(fixture.notices.at(-1)?.[0] ?? "", /cache text ON/);
 });
 
@@ -129,8 +129,8 @@ test("dsh help documents the complete command surface without changing state", a
   await fixture.commands.get("dsh")?.handler("help", fixture.context);
   const help = fixture.notices.at(-1)?.[0] ?? "";
   assert.match(help, /\/dsh — toggle/);
-  assert.match(help, /\/dsh on/);
-  assert.match(help, /\/dsh off/);
+  assert.match(help, /\/dsh show/);
+  assert.match(help, /\/dsh hide/);
   assert.match(help, /\/dsh help/);
   assert.match(help, /do not disable indexing/);
   assert.equal(fixture.widgets.length, before, "help must not change display state");
